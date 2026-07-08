@@ -116,8 +116,6 @@
       setupSteps: document.getElementById('setup-steps'),
       setupRetry: document.getElementById('setup-retry'),
       setupCopy: document.getElementById('setup-copy'),
-      savedProjectsList: document.getElementById('saved-projects-list'),
-      savedCount: document.getElementById('saved-count'),
       addProjectBtn: document.getElementById('add-project-btn'),
       startProjectsBtn: document.getElementById('start-projects-btn')
     }
@@ -177,10 +175,15 @@
         return
       }
 
+      if (target.dataset.projectDelete) {
+        deleteSavedProjectRow(target.dataset.projectDelete, target)
+        return
+      }
+
       if (target.dataset.action && !window.GUI.readonly) {
         var id = target.dataset.id
         var action = target.dataset.action
-        if (action === 'delete' && id !== 'all' && !confirm('Delete process ' + id + '?')) {
+        if (action === 'delete' && id !== 'all' && !confirm('Delete this process and remove it from saved projects?')) {
           return
         }
         if (action === 'delete' && id === 'all' && !confirm('Delete ALL processes?')) {
@@ -257,6 +260,10 @@
     socket.on(EVENTS.DATA_ACTION, function (payload) {
       if (payload && payload.error) {
         toast(payload.error, 'error')
+        return
+      }
+      if (payload && payload.success && payload.action === 'delete') {
+        loadSavedProjects()
       }
     })
     socket.on(EVENTS.ERROR, handlers.onError || onSocketError)
@@ -338,16 +345,12 @@
   }
 
   function loadSavedProjects () {
-    if (!els.savedProjectsList) {
-      return
-    }
-
     state.projectsLoading = true
     fetch('/projects_api', { credentials: 'same-origin' })
       .then(function (res) { return res.json() })
       .then(function (data) {
         state.savedProjects = data.projects || []
-        renderSavedProjects(data.dataDir)
+        renderProcessTable()
       })
       .catch(function (err) {
         toast('Could not load saved project folders.', 'error')
@@ -357,40 +360,33 @@
       })
   }
 
-  function renderSavedProjects (dataDir) {
-    if (!els.savedProjectsList) {
-      return
+  function normalizePath (value) {
+    return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  }
+
+  function findProjectForProcess (proc) {
+    var cwd = proc.pm2_env && proc.pm2_env.pm_cwd
+    if (!cwd) {
+      return null
     }
+    var normalized = normalizePath(cwd)
+    return state.savedProjects.find(function (project) {
+      return normalizePath(project.path) === normalized
+    }) || null
+  }
 
-    els.savedCount.textContent = state.savedProjects.length + ' saved'
+  function findProcessForProject (project) {
+    var normalized = normalizePath(project.path)
+    return state.processes.find(function (proc) {
+      var cwd = proc.pm2_env && proc.pm2_env.pm_cwd
+      return cwd && normalizePath(cwd) === normalized
+    }) || null
+  }
 
-    if (!state.savedProjects.length) {
-      els.savedProjectsList.innerHTML = '<div class="empty-state">No saved folders yet. Click “Add project folder” to pick one.</div>'
-      return
-    }
-
-    els.savedProjectsList.innerHTML = state.savedProjects.map(function (project) {
-      var entry = project.type === 'ecosystem'
-        ? 'ecosystem config'
-        : (project.script || 'index.js')
-      var actions = window.GUI.readonly ? '' : (
-        '<div class="saved-project-actions">' +
-          '<button class="btn btn-secondary" data-project-start="' + project.id + '">Start</button>' +
-          '<button class="btn btn-icon" data-project-remove="' + project.id + '" title="Remove">✕</button>' +
-        '</div>'
-      )
-
-      return (
-        '<div class="saved-project-card">' +
-          '<div class="saved-project-main">' +
-            '<strong>' + escapeHtml(project.name) + '</strong>' +
-            '<span class="saved-project-path" title="' + escapeHtml(project.path) + '">' + escapeHtml(project.path) + '</span>' +
-            '<span class="saved-project-meta">Entry: ' + escapeHtml(entry) + (dataDir ? '' : '') + '</span>' +
-          '</div>' +
-          actions +
-        '</div>'
-      )
-    }).join('')
+  function getUnmanagedSavedProjects () {
+    return state.savedProjects.filter(function (project) {
+      return !findProcessForProject(project)
+    })
   }
 
   function browseProjectFolder () {
@@ -418,9 +414,6 @@
         }
         toast('Saved project folder: ' + result.body.project.name)
         loadSavedProjects()
-        if (state.sockets.process && state.sockets.process.connected) {
-          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
-        }
       })
       .catch(function (err) {
         toast(err.message, 'error')
@@ -489,9 +482,6 @@
   }
 
   function removeSavedProject (projectId, button) {
-    if (!confirm('Remove this saved folder from your list?')) {
-      return
-    }
     if (button) {
       button.disabled = true
     }
@@ -516,6 +506,13 @@
           button.disabled = false
         }
       })
+  }
+
+  function deleteSavedProjectRow (projectId, button) {
+    if (!confirm('Remove this saved project from your list?')) {
+      return
+    }
+    removeSavedProject(projectId, button)
   }
 
   function onSocketError (err) {
@@ -543,46 +540,98 @@
     state.processes = processes || []
     markConnected(els.pm2Version.textContent === 'Connecting...' ? 'Connected' : els.pm2Version.textContent)
     els.statProcesses.textContent = String(state.processes.length)
-    els.processCount.textContent = state.processes.length + ' app' + (state.processes.length === 1 ? '' : 's')
     renderProcessTable()
   }
 
   function renderProcessTable () {
-    if (!state.processes.length) {
-      els.processList.innerHTML = '<tr><td colspan="' + (window.GUI.readonly ? 8 : 9) + '"><div class="empty-state">No processes running. Start apps with <code>pm2 start app.js</code>.</div></td></tr>'
+    var colSpan = window.GUI.readonly ? 8 : 9
+    var unmanaged = getUnmanagedSavedProjects()
+    var totalRows = state.processes.length + unmanaged.length
+
+    els.processCount.textContent = totalRows + ' app' + (totalRows === 1 ? '' : 's')
+
+    if (!totalRows) {
+      els.processList.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="empty-state">No projects yet. Click <strong>Add project folder</strong> to add one without starting it.</div></td></tr>'
       return
     }
 
-    els.processList.innerHTML = state.processes.map(function (proc) {
-      var env = proc.pm2_env || {}
-      var status = env.status || 'unknown'
-      var mode = (env.exec_mode || '').replace(/_mode$/, '')
-      var actions = window.GUI.readonly ? '' : (
-        '<td class="row-actions">' +
-          actionButton('restart', proc.pm_id) +
-          (status === 'online' ? actionButton('stop', proc.pm_id) : '') +
-          actionButton('delete', proc.pm_id) +
-        '</td>'
-      )
+    var rows = state.processes.map(renderProcessRow).concat(unmanaged.map(renderSavedProjectRow))
+    els.processList.innerHTML = rows.join('')
+  }
 
-      return (
-        '<tr class="is-clickable" data-pmid="' + proc.pm_id + '">' +
-          '<td><span class="status-badge ' + status + '"><span class="status-dot"></span>' + status + '</span></td>' +
-          '<td><strong>' + escapeHtml(proc.name || 'unknown') + '</strong></td>' +
-          '<td>' + proc.pm_id + '</td>' +
-          '<td><span class="mode-badge">' + escapeHtml(mode || 'fork') + '</span></td>' +
-          '<td>' + formatPercent(proc.monit && proc.monit.cpu) + '</td>' +
-          '<td>' + formatBytes(proc.monit && proc.monit.memory) + '</td>' +
-          '<td>' + (env.restart_time || 0) + '</td>' +
-          '<td>' + formatDuration(env.pm_uptime ? (Date.now() - env.pm_uptime) / 1000 : 0) + '</td>' +
-          actions +
-        '</tr>'
-      )
-    }).join('')
+  function renderProcessRow (proc) {
+    var env = proc.pm2_env || {}
+    var status = env.status || 'unknown'
+    var mode = (env.exec_mode || '').replace(/_mode$/, '')
+    var project = findProjectForProcess(proc)
+    var pathHint = project ? project.path : (env.pm_cwd || '')
+    var actions = window.GUI.readonly ? '' : (
+      '<td class="row-actions">' +
+        renderProcessActions(status, proc.pm_id) +
+      '</td>'
+    )
+
+    return (
+      '<tr class="is-clickable" data-pmid="' + proc.pm_id + '">' +
+        '<td><span class="status-badge ' + status + '"><span class="status-dot"></span>' + status + '</span></td>' +
+        '<td>' + renderNameCell(proc.name || 'unknown', pathHint) + '</td>' +
+        '<td>' + proc.pm_id + '</td>' +
+        '<td><span class="mode-badge">' + escapeHtml(mode || 'fork') + '</span></td>' +
+        '<td>' + formatPercent(proc.monit && proc.monit.cpu) + '</td>' +
+        '<td>' + formatBytes(proc.monit && proc.monit.memory) + '</td>' +
+        '<td>' + (env.restart_time || 0) + '</td>' +
+        '<td>' + formatDuration(env.pm_uptime ? (Date.now() - env.pm_uptime) / 1000 : 0) + '</td>' +
+        actions +
+      '</tr>'
+    )
+  }
+
+  function renderSavedProjectRow (project) {
+    var entry = project.type === 'ecosystem'
+      ? 'ecosystem config'
+      : (project.script || 'index.js')
+    var actions = window.GUI.readonly ? '' : (
+      '<td class="row-actions">' +
+        '<button class="btn btn-icon" data-project-start="' + project.id + '" title="start">▶</button>' +
+        '<button class="btn btn-icon" data-project-delete="' + project.id + '" title="delete">✕</button>' +
+      '</td>'
+    )
+
+    return (
+      '<tr class="is-saved" data-project-id="' + project.id + '">' +
+        '<td><span class="status-badge saved"><span class="status-dot"></span>saved</span></td>' +
+        '<td>' + renderNameCell(project.name, project.path, entry) + '</td>' +
+        '<td>—</td>' +
+        '<td><span class="mode-badge">—</span></td>' +
+        '<td>—</td>' +
+        '<td>—</td>' +
+        '<td>—</td>' +
+        '<td>—</td>' +
+        actions +
+      '</tr>'
+    )
+  }
+
+  function renderNameCell (name, pathHint, entry) {
+    var html = '<strong>' + escapeHtml(name) + '</strong>'
+    if (pathHint) {
+      html += '<span class="process-path" title="' + escapeHtml(pathHint) + '">' + escapeHtml(pathHint) + '</span>'
+    }
+    if (entry) {
+      html += '<span class="process-entry">Entry: ' + escapeHtml(entry) + '</span>'
+    }
+    return html
+  }
+
+  function renderProcessActions (status, id) {
+    if (status === 'online') {
+      return actionButton('restart', id) + actionButton('stop', id) + actionButton('delete', id)
+    }
+    return actionButton('start', id) + actionButton('delete', id)
   }
 
   function actionButton (action, id) {
-    var labels = { restart: '↻', stop: '■', delete: '✕' }
+    var labels = { start: '▶', restart: '↻', stop: '■', delete: '✕' }
     return '<button class="btn btn-icon" data-action="' + action + '" data-id="' + id + '" title="' + action + '">' + (labels[action] || action) + '</button>'
   }
 

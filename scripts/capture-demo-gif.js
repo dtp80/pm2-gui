@@ -98,7 +98,7 @@ function maskPersonalInfo (page) {
     var platform = document.getElementById('stat-platform')
     if (platform) platform.textContent = 'linux 6.8.0'
 
-    document.querySelectorAll('.saved-project-path').forEach(function (el) {
+    document.querySelectorAll('.process-path').forEach(function (el) {
       el.textContent = '/home/demo/projects/sample-app'
       el.title = '/home/demo/projects/sample-app'
     })
@@ -134,24 +134,25 @@ function maskModalInfo (page) {
 
 function injectDemoProjects (page) {
   return page.evaluate(function () {
-    var list = document.getElementById('saved-projects-list')
-    var count = document.getElementById('saved-count')
+    var list = document.getElementById('process-list')
+    var count = document.getElementById('process-count')
     if (!list) return
 
     list.innerHTML = '' +
-      '<div class="saved-project-card">' +
-        '<div class="saved-project-main">' +
-          '<strong>sample-app</strong>' +
-          '<span class="saved-project-path" title="/home/demo/projects/sample-app">/home/demo/projects/sample-app</span>' +
-          '<span class="saved-project-meta">Entry: index.js</span>' +
-        '</div>' +
-        '<div class="saved-project-actions">' +
-          '<button class="btn btn-secondary">Start</button>' +
-          '<button class="btn btn-icon" title="Remove">✕</button>' +
-        '</div>' +
-      '</div>'
+      '<tr class="is-saved" data-project-id="demo">' +
+        '<td><span class="status-badge saved"><span class="status-dot"></span>saved</span></td>' +
+        '<td><strong>sample-app</strong>' +
+          '<span class="process-path" title="/home/demo/projects/sample-app">/home/demo/projects/sample-app</span>' +
+          '<span class="process-entry">Entry: index.js</span></td>' +
+        '<td>—</td><td><span class="mode-badge">—</span></td>' +
+        '<td>—</td><td>—</td><td>—</td><td>—</td>' +
+        '<td class="row-actions">' +
+          '<button class="btn btn-icon" title="start">▶</button>' +
+          '<button class="btn btn-icon" title="delete">✕</button>' +
+        '</td>' +
+      '</tr>'
 
-    if (count) count.textContent = '1 saved'
+    if (count) count.textContent = '1 app'
   })
 }
 

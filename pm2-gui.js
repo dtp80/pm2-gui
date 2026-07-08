@@ -177,7 +177,9 @@ function dashboard (confFile) {
  * @return {N/A}
  */
 function exitGraceful (code, signal) {
-  code = code || 0
+  if (typeof code !== 'number') {
+    code = 0
+  }
   if (signal !== '-f') {
     console.debug('Slave has exited, code: ' + code + ', signal: ' + (signal || 'N/A'))
   }
@@ -245,10 +247,11 @@ function slave (options) {
   return monitor
 
   function shutdown (code, signal) {
+    var exitCode = typeof code === 'number' ? code : 0
     console.info('Shutting down....')
     monitor.quit()
     console.info('Completed!')
-    exitGraceful(code, '-f')
+    exitGraceful(exitCode, '-f')
   }
 
   function restart () {

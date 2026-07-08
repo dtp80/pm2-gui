@@ -226,61 +226,6 @@ body {
   margin-bottom: 24px;
 }
 
-.saved-count {
-  color: var(--text-muted);
-  font-size: 0.875rem;
-}
-
-.saved-projects-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.saved-project-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.65);
-}
-
-.saved-project-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.saved-project-main strong {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.saved-project-path {
-  display: block;
-  color: var(--text-muted);
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.saved-project-meta {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.saved-project-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 .processes-section {
   margin-bottom: 0;
 }
@@ -363,6 +308,38 @@ body {
 .status-badge.errored {
   background: rgba(239, 68, 68, 0.15);
   color: #fca5a5;
+}
+
+.status-badge.saved {
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+}
+
+.process-table td strong {
+  display: block;
+}
+
+.process-path {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.process-entry {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.process-table tbody tr.is-saved {
+  background: rgba(99, 102, 241, 0.04);
 }
 
 .status-dot {
