@@ -1,5 +1,6 @@
 var _ = require('lodash')
 var Monitor = require('../../lib/monitor')
+var setupStatus = require('../../lib/setup-status')
 
 // Authorization
 action(function auth (req, res) {
@@ -55,5 +56,15 @@ action(function auth_api (req, res) { // eslint-disable-line camelcase
   }
   return res.json({
     error: 'Failed, authorization is incorrect.'
+  })
+})
+
+// Setup / health status for the dashboard
+action(function status_api (req, res) { // eslint-disable-line camelcase
+  setupStatus.getSetupStatusAsync(req._config, function (err, status) {
+    if (err) {
+      return res.status(500).json({ error: err.message })
+    }
+    res.json(status)
   })
 })

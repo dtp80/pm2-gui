@@ -44,15 +44,13 @@ body {
   margin-bottom: 24px;
 }
 
-.brand-mark {
-  display: inline-grid;
-  place-items: center;
+.brand-logo {
+  display: block;
   width: 56px;
   height: 56px;
+  margin: 0 auto 12px;
   border-radius: 16px;
-  font-weight: 700;
-  background: linear-gradient(135deg, var(--accent), #8b5cf6);
-  margin-bottom: 12px;
+  object-fit: cover;
 }
 
 .auth-brand h1 {

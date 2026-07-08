@@ -1,6 +1,5 @@
-'use strict'
-
 document.addEventListener('DOMContentLoaded', function () {
+  'use strict'
   var form = document.getElementById('auth-form')
   var input = document.getElementById('auth-input')
   var errorEl = document.getElementById('auth-error')

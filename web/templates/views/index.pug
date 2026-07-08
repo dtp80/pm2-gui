@@ -4,7 +4,7 @@ block content
   .app#app
     header.app-header
       .brand
-        .brand-mark PM2
+        img.brand-logo(src='/img/pm2.webp', alt='PM2', width='48', height='48')
         .brand-text
           h1 PM2 Monitor
           p.brand-subtitle#pm2-version Connecting...
@@ -70,6 +70,22 @@ block content
 
     .toast-container#toast-container
 
+    .modal#setup-modal(hidden)
+      .modal-backdrop(data-close='setup')
+      .modal-panel.setup-panel
+        .modal-header
+          div
+            h3 Setup required
+            p#setup-summary Checking connection to PM2...
+          button.modal-close(data-close='setup', aria-label='Close') ×
+        .modal-body
+          .setup-status#setup-status
+            .loader Checking setup...
+          ol.setup-steps#setup-steps
+          .setup-actions
+            button.btn.btn-primary#setup-retry(type='button') Retry connection
+            button.btn.btn-secondary#setup-copy(type='button') Copy setup commands
+
     .modal#process-modal(hidden)
       .modal-backdrop(data-close='modal')
       .modal-panel
@@ -100,4 +116,4 @@ block content
       readonly: #{readonly ? 'true' : 'false'}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js')
+  script(src='/js/app.js?v=0.2.3')

@@ -1,6 +1,5 @@
-'use strict'
-
-(function () {
+;(function () {
+  'use strict'
   var NSP = {
     SYS: '/system',
     LOG: '/log',
@@ -11,6 +10,7 @@
     ERROR: 'error',
     CONNECT: 'connect',
     CONNECT_ERROR: 'connect_error',
+    DISCONNECT: 'disconnect',
     DATA: 'data',
     DATA_PROCESSES: 'data.processes',
     DATA_SYSTEM_STATS: 'data.sysstat',
@@ -20,8 +20,11 @@
     PULL_LOGS: 'pull.log',
     PULL_LOGS_END: 'pull.log_end',
     PULL_USAGE: 'pull.usage',
+    PULL_PROCESSES: 'pull.processes',
     PULL_ACTION: 'pull.action'
   }
+
+  var CONNECT_TIMEOUT_MS = 8000
 
   var state = {
     sysStat: null,
@@ -29,34 +32,56 @@
     sockets: {},
     selectedProc: null,
     monitorData: [],
-    monitorTimer: null,
-    logAutoScroll: true
+    logAutoScroll: true,
+    connected: false,
+    connectionValue: null,
+    connectTimer: null,
+    setupData: null
   }
 
   var els = {}
 
-  document.addEventListener('DOMContentLoaded', init)
+  boot()
+
+  function boot () {
+    try {
+      document.documentElement.dataset.pm2guiBoot = 'starting'
+      init()
+      document.documentElement.dataset.pm2guiBoot = 'done'
+    } catch (err) {
+      document.documentElement.dataset.pm2guiBoot = 'error'
+      document.documentElement.dataset.pm2guiError = err.message
+      cacheElements()
+      showSetupModal('Dashboard failed to start: ' + err.message)
+    }
+  }
 
   function init () {
     cacheElements()
+
+    if (typeof io === 'undefined') {
+      showFatal('Socket.IO client failed to load. Restart pm2-gui and reload this page.')
+      return
+    }
+
     bindUI()
 
     if (!Array.isArray(window.GUI.connections) || window.GUI.connections.length === 0) {
-      toast('No agent is online.', 'error')
+      showSetupModal('No monitoring agent is configured.')
       return
     }
 
     var connection = window.GUI.connections[window.GUI.connections.length - 1]
-    var select = els.agentSelect
-    if (select) {
-      select.addEventListener('change', function () {
-        reconnect(select.value)
+    if (els.agentSelect) {
+      els.agentSelect.addEventListener('change', function () {
+        reconnect(els.agentSelect.value)
       })
       connection = window.GUI.connections.find(function (c) {
-        return c.value === select.value
+        return c.value === els.agentSelect.value
       }) || connection
     }
 
+    loadSetupStatus()
     connectAll(connection.value)
   }
 
@@ -80,13 +105,24 @@
       modalInfo: document.getElementById('modal-info'),
       modalLog: document.getElementById('modal-log'),
       monitorChart: document.getElementById('monitor-chart'),
-      agentSelect: document.getElementById('agent-select')
+      agentSelect: document.getElementById('agent-select'),
+      setupModal: document.getElementById('setup-modal'),
+      setupSummary: document.getElementById('setup-summary'),
+      setupStatus: document.getElementById('setup-status'),
+      setupSteps: document.getElementById('setup-steps'),
+      setupRetry: document.getElementById('setup-retry'),
+      setupCopy: document.getElementById('setup-copy')
     }
   }
 
   function bindUI () {
     document.body.addEventListener('click', function (event) {
       var target = event.target
+
+      if (target.dataset.close === 'setup') {
+        hideSetupModal()
+        return
+      }
 
       if (target.dataset.close === 'modal') {
         closeModal()
@@ -98,10 +134,20 @@
         return
       }
 
+      if (target.id === 'setup-retry') {
+        reconnect(state.connectionValue || getCurrentConnection())
+        return
+      }
+
+      if (target.id === 'setup-copy') {
+        copySetupCommands()
+        return
+      }
+
       if (target.dataset.action && !window.GUI.readonly) {
         var id = target.dataset.id
         var action = target.dataset.action
-        if (action === 'delete' && !confirm('Delete process ' + id + '?')) {
+        if (action === 'delete' && id !== 'all' && !confirm('Delete process ' + id + '?')) {
           return
         }
         if (action === 'delete' && id === 'all' && !confirm('Delete ALL processes?')) {
@@ -120,31 +166,77 @@
 
   function connectAll (connectionValue) {
     disconnectAll()
+    clearConnectTimer()
+    state.connectionValue = connectionValue
+    state.connected = false
+    setConnectionStatus('Connecting...', 'pending')
+
     state.sockets.sys = connectSocket(connectionValue, NSP.SYS)
     state.sockets.process = connectSocket(connectionValue, NSP.PROCESS)
 
-    state.sockets.sys.on(EVENTS.DATA_SYSTEM_STATS, onSystemStats)
-    state.sockets.sys.on(EVENTS.DATA_PM2_VERSION, function (version) {
-      els.pm2Version.textContent = 'PM2 v' + version
+    wireSocket(state.sockets.sys, {
+      onConnect: function () {
+        markPartiallyConnected('Connected to monitor')
+      },
+      onVersion: function (version) {
+        markConnected('PM2 v' + version)
+      },
+      onSysStat: onSystemStats,
+      onError: onSocketError
     })
-    state.sockets.sys.on(EVENTS.DATA_ACTION, function (payload) {
+
+    wireSocket(state.sockets.process, {
+      onConnect: function () {
+        state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+      },
+      onProcesses: onProcesses,
+      onError: onSocketError
+    })
+
+    state.connectTimer = setTimeout(function () {
+      if (!state.connected) {
+        showSetupModal('Could not connect to the pm2-gui monitor within ' + (CONNECT_TIMEOUT_MS / 1000) + ' seconds.')
+      }
+    }, CONNECT_TIMEOUT_MS)
+  }
+
+  function wireSocket (socket, handlers) {
+    socket.on(EVENTS.CONNECT, function () {
+      handlers.onConnect && handlers.onConnect()
+    })
+    socket.on(EVENTS.CONNECT_ERROR, handlers.onError || onSocketError)
+    socket.on(EVENTS.DISCONNECT, function () {
+      if (state.connected) {
+        setConnectionStatus('Reconnecting...', 'pending')
+      }
+    })
+
+    if (handlers.onVersion) {
+      socket.on(EVENTS.DATA_PM2_VERSION, handlers.onVersion)
+    }
+    if (handlers.onSysStat) {
+      socket.on(EVENTS.DATA_SYSTEM_STATS, handlers.onSysStat)
+    }
+    if (handlers.onProcesses) {
+      socket.on(EVENTS.DATA_PROCESSES, handlers.onProcesses)
+    }
+
+    socket.on(EVENTS.DATA_ACTION, function (payload) {
       if (payload && payload.error) {
         toast(payload.error, 'error')
       }
     })
-    state.sockets.sys.on(EVENTS.ERROR, onSocketError)
-    state.sockets.sys.on(EVENTS.CONNECT_ERROR, onSocketError)
-
-    state.sockets.process.on(EVENTS.DATA_PROCESSES, onProcesses)
-    state.sockets.process.on(EVENTS.ERROR, onSocketError)
-    state.sockets.process.on(EVENTS.CONNECT_ERROR, onSocketError)
+    socket.on(EVENTS.ERROR, handlers.onError || onSocketError)
   }
 
   function reconnect (connectionValue) {
+    hideSetupModal()
     connectAll(connectionValue)
+    loadSetupStatus()
   }
 
   function disconnectAll () {
+    clearConnectTimer()
     Object.keys(state.sockets).forEach(function (key) {
       if (state.sockets[key]) {
         state.sockets[key].disconnect()
@@ -157,7 +249,12 @@
 
   function connectSocket (connectionValue, namespace) {
     var uri = connectionValue
-    if (uri.indexOf('localhost') >= 0 || /127\.0\.0\.1/.test(uri)) {
+    var pageHost = location.hostname
+    var pageIsLocal = pageHost === 'localhost' || pageHost === '127.0.0.1'
+
+    if (pageIsLocal && (/127\.0\.0\.1|localhost/.test(uri))) {
+      uri = uri.replace(/^https?:\/\/[^/?]+/, location.origin.replace(/\/$/, ''))
+    } else if (!pageIsLocal) {
       uri = uri.replace(/^https?:\/\/[^/?]+/, location.origin.replace(/\/$/, ''))
     }
 
@@ -176,22 +273,49 @@
     }
 
     return io(uri, {
+      transports: ['websocket', 'polling'],
       forceNew: true,
-      timeout: 5000,
-      reconnection: true
+      timeout: CONNECT_TIMEOUT_MS,
+      reconnection: true,
+      reconnectionAttempts: 10
     })
+  }
+
+  function markPartiallyConnected (label) {
+    setConnectionStatus(label, 'pending')
+  }
+
+  function markConnected (label) {
+    state.connected = true
+    clearConnectTimer()
+    hideSetupModal()
+    setConnectionStatus(label, 'ok')
+  }
+
+  function setConnectionStatus (label, tone) {
+    els.pm2Version.textContent = label
+    els.pm2Version.dataset.state = tone || 'pending'
+  }
+
+  function clearConnectTimer () {
+    if (state.connectTimer) {
+      clearTimeout(state.connectTimer)
+      state.connectTimer = null
+    }
   }
 
   function onSocketError (err) {
     var message = typeof err === 'string' ? err : (err && err.message) || 'Connection error'
     if (message === 'unauthorized') {
-      message = 'Authentication failed. Check your authorization token.'
+      message = 'Authentication failed. Check your authorization token in pm2-gui.ini.'
+      showSetupModal(message)
     }
     toast(message, 'error')
   }
 
   function onSystemStats (data) {
     state.sysStat = data
+    markConnected(els.pm2Version.textContent.indexOf('PM2 v') === 0 ? els.pm2Version.textContent : 'Connected')
     els.statHostname.textContent = data.hostname || '—'
     els.statPlatform.textContent = (data.platform || '') + ' ' + (data.release || '')
     els.statCpu.textContent = (data.cpu || 0) + '%'
@@ -203,6 +327,7 @@
 
   function onProcesses (processes) {
     state.processes = processes || []
+    markConnected(els.pm2Version.textContent === 'Connecting...' ? 'Connected' : els.pm2Version.textContent)
     els.statProcesses.textContent = String(state.processes.length)
     els.processCount.textContent = state.processes.length + ' app' + (state.processes.length === 1 ? '' : 's')
     renderProcessTable()
@@ -210,7 +335,7 @@
 
   function renderProcessTable () {
     if (!state.processes.length) {
-      els.processList.innerHTML = '<tr><td colspan="' + (window.GUI.readonly ? 8 : 9) + '"><div class="empty-state">No processes running. Start apps with <code>pm2 start</code>.</div></td></tr>'
+      els.processList.innerHTML = '<tr><td colspan="' + (window.GUI.readonly ? 8 : 9) + '"><div class="empty-state">No processes running. Start apps with <code>pm2 start app.js</code>.</div></td></tr>'
       return
     }
 
@@ -248,7 +373,8 @@
   }
 
   function runAction (action, id, button) {
-    if (!state.sockets.sys) {
+    if (!state.sockets.sys || !state.sockets.sys.connected) {
+      toast('Not connected to monitor.', 'error')
       return
     }
     if (button) {
@@ -256,6 +382,86 @@
       setTimeout(function () { button.disabled = false }, 1200)
     }
     state.sockets.sys.emit(EVENTS.PULL_ACTION, action, id)
+  }
+
+  function loadSetupStatus () {
+    fetch('/status_api', { credentials: 'same-origin' })
+      .then(function (res) { return res.json() })
+      .then(function (data) {
+        state.setupData = data
+        renderSetupStatus(data)
+      })
+      .catch(function () {
+        if (els.setupStatus) {
+          els.setupStatus.innerHTML = '<div class="setup-alert">Could not load setup status from the server.</div>'
+        }
+      })
+  }
+
+  function renderSetupStatus (data) {
+    if (!els.setupSteps || !data) {
+      return
+    }
+
+    var checks = [
+      { ok: data.homeExists, label: 'PM2 home exists', detail: data.pm2Home },
+      { ok: data.socketsExist, label: 'PM2 daemon is running', detail: data.socketsExist ? 'rpc.sock and pub.sock found' : 'Run `pm2 ls` to start the daemon' },
+      { ok: data.pm2Connected, label: 'PM2 API reachable', detail: data.pm2Error || (data.pm2Version ? 'PM2 v' + data.pm2Version : 'Connected') }
+    ]
+
+    els.setupStatus.innerHTML = checks.map(function (item) {
+      return '<div class="setup-check ' + (item.ok ? 'ok' : 'fail') + '"><strong>' + escapeHtml(item.label) + '</strong><span>' + escapeHtml(item.detail || '') + '</span></div>'
+    }).join('')
+
+    if (Array.isArray(data.steps)) {
+      els.setupSteps.innerHTML = data.steps.map(function (step, index) {
+        return (
+          '<li class="' + (step.done ? 'done' : '') + '">' +
+            '<span class="step-num">' + (index + 1) + '</span>' +
+            '<div><strong>' + escapeHtml(step.title) + '</strong>' +
+            '<code>' + escapeHtml(step.command) + '</code></div>' +
+          '</li>'
+        )
+      }).join('')
+    }
+  }
+
+  function showSetupModal (message) {
+    if (!els.setupModal) {
+      return
+    }
+    els.setupSummary.textContent = message || 'Additional setup is required before pm2-gui can connect to PM2.'
+    els.setupModal.hidden = false
+    loadSetupStatus()
+  }
+
+  function hideSetupModal () {
+    if (els.setupModal) {
+      els.setupModal.hidden = true
+    }
+  }
+
+  function copySetupCommands () {
+    var commands = [
+      'npm install -g pm2',
+      'pm2 ls',
+      'cd /path/to/pm2-gui && npm install && npm start'
+    ]
+    if (state.setupData && Array.isArray(state.setupData.steps)) {
+      commands = state.setupData.steps.map(function (step) { return step.command })
+    }
+    navigator.clipboard.writeText(commands.join('\n')).then(function () {
+      toast('Setup commands copied to clipboard.')
+    }).catch(function () {
+      toast('Could not copy commands automatically.', 'error')
+    })
+  }
+
+  function showFatal (message) {
+    if (els.processList) {
+      els.processList.innerHTML = '<tr><td colspan="9"><div class="empty-state">' + escapeHtml(message) + '</div></td></tr>'
+    }
+    showSetupModal(message)
   }
 
   function openProcessModal (pmId) {
@@ -285,10 +491,10 @@
   }
 
   function switchTab (tabName) {
-    document.querySelectorAll('.tab').forEach(function (tab) {
+    document.querySelectorAll('#process-modal .tab').forEach(function (tab) {
       tab.classList.toggle('active', tab.dataset.tab === tabName)
     })
-    document.querySelectorAll('.tab-panel').forEach(function (panel) {
+    document.querySelectorAll('#process-modal .tab-panel').forEach(function (panel) {
       panel.classList.toggle('active', panel.id === 'tab-' + tabName)
     })
 
@@ -299,7 +505,7 @@
 
   function formatProcessInfo (proc) {
     var env = proc.pm2_env || {}
-    var lines = [
+    return [
       'name: ' + (proc.name || ''),
       'pm_id: ' + proc.pm_id,
       'pid: ' + (proc.pid || 0),
@@ -307,18 +513,14 @@
       'mode: ' + (env.exec_mode || ''),
       'restarts: ' + (env.restart_time || 0),
       'exec path: ' + (env.pm_exec_path || ''),
-      'script: ' + (env.pm_cwd || '') + '/' + (env.name || ''),
       'user: ' + (env.user || env.USER || ''),
       'created: ' + (env.created_at ? new Date(env.created_at).toLocaleString() : '—')
-    ]
-    return lines.join('\n')
+    ].join('\n')
   }
 
   function startLogTail (pmId) {
     closeLogSocket()
-    var connection = getCurrentConnection()
-    state.sockets.log = connectSocket(connection, NSP.LOG)
-
+    state.sockets.log = connectSocket(getCurrentConnection(), NSP.LOG)
     state.sockets.log.on(EVENTS.CONNECT, function () {
       state.sockets.log.emit(EVENTS.PULL_LOGS, pmId, true)
     })
@@ -362,8 +564,7 @@
       return
     }
 
-    var connection = getCurrentConnection()
-    state.sockets.monitor = connectSocket(connection, NSP.PROCESS)
+    state.sockets.monitor = connectSocket(getCurrentConnection(), NSP.PROCESS)
     state.sockets.monitor.on(EVENTS.CONNECT, function () {
       state.sockets.monitor.emit(EVENTS.PULL_USAGE, pid)
     })
@@ -398,7 +599,6 @@
     var width = canvas.width
     var height = canvas.height
     ctx.clearRect(0, 0, width, height)
-
     ctx.fillStyle = '#0f172a'
     ctx.fillRect(0, 0, width, height)
 
@@ -421,11 +621,8 @@
         var x = padding + (index / Math.max(state.monitorData.length - 1, 1)) * chartWidth
         var value = key === 'cpu' ? (point.usage.cpu || 0) : (point.usage.memory || 0)
         var y = padding + chartHeight - (Math.min(value, 100) / 100) * chartHeight
-        if (index === 0) {
-          ctx.moveTo(x, y)
-        } else {
-          ctx.lineTo(x, y)
-        }
+        if (index === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
       })
       ctx.stroke()
     }
@@ -455,9 +652,7 @@
     node.className = 'toast' + (type ? ' ' + type : '')
     node.textContent = message
     els.toastContainer.appendChild(node)
-    setTimeout(function () {
-      node.remove()
-    }, 5000)
+    setTimeout(function () { node.remove() }, 5000)
   }
 
   function formatBytes (bytes) {
@@ -469,8 +664,7 @@
   }
 
   function formatPercent (value) {
-    value = Number(value) || 0
-    return value.toFixed(1) + '%'
+    return (Number(value) || 0).toFixed(1) + '%'
   }
 
   function formatDuration (seconds) {
