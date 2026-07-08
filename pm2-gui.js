@@ -11,6 +11,8 @@ var Monitor = require('./lib/monitor')
 var Log = require('./lib/util/log')
 var Web = require('./web/index')
 var Layout = require('./lib/blessed-widget/layout')
+var projectsStore = require('./lib/projects-store')
+var userData = require('./lib/user-data')
 
 var regLocal = /^(127\.0\.0\.1|0\.0\.0\.0|localhost)$/i
 
@@ -58,6 +60,7 @@ exports.exitGraceful = exitGraceful
  * @return {N/A}
  */
 function startWebServer (confFile) {
+  userData.ensureUserDataDir()
   var monitor = slave({
     confFile: confFile
   })
@@ -78,6 +81,25 @@ function startWebServer (confFile) {
   })
   monitor.run()
   console.info('Web server is listening on 127.0.0.1:' + options.port)
+  console.info('User projects stored in:', projectsStore.getDataDir())
+
+  projectsStore.autoStartAll({ pm2Home: options.pm2 }, function (err, results) {
+    if (!results || results.length === 0) {
+      return
+    }
+    results.forEach(function (result) {
+      if (result.status === 'started') {
+        console.info('[projects] Started', result.project.name, 'from', result.project.path)
+      } else if (result.status === 'already_running') {
+        console.info('[projects] Already running', result.project.name)
+      } else if (result.status === 'error') {
+        console.warn('[projects] Failed to start', result.project.name + ':', result.error)
+      }
+    })
+    if (err) {
+      console.warn('[projects] Some saved projects could not be started:', err.message)
+    }
+  })
 }
 
 /**

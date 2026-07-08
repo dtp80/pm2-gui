@@ -15,6 +15,8 @@ block content
               option(value=conn.value, selected=conn.short === 'localhost')= conn.short
         if !readonly
           .bulk-actions
+            button.btn.btn-primary#add-project-btn(type='button') Add project folder
+            button.btn.btn-secondary#start-projects-btn(type='button') Start saved
             button.btn.btn-secondary(data-action='restart', data-id='all', title='Restart all') Restart all
             button.btn.btn-secondary(data-action='stop', data-id='all', title='Stop all') Stop all
             button.btn.btn-secondary(data-action='save', data-id='all', title='Save dump') Save
@@ -44,6 +46,15 @@ block content
         .stat-card
           .stat-label Processes
           .stat-value#stat-processes 0
+
+      section.saved-projects-section#saved-projects-section
+        .section-header
+          div
+            h2 Saved project folders
+            p.section-hint Stored per user in your local app data folder
+          span.saved-count#saved-count 0 saved
+        .saved-projects-list#saved-projects-list
+          .empty-state No saved folders yet. Click “Add project folder” to pick one.
 
       section.processes-section
         .section-header
@@ -116,4 +127,4 @@ block content
       readonly: #{readonly ? 'true' : 'false'}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.2.3')
+  script(src='/js/app.js?v=0.3.0')

@@ -36,7 +36,10 @@
     connected: false,
     connectionValue: null,
     connectTimer: null,
-    setupData: null
+    setupData: null,
+    savedProjects: [],
+    projectsLoading: false,
+    browsingFolder: false
   }
 
   var els = {}
@@ -82,6 +85,7 @@
     }
 
     loadSetupStatus()
+    loadSavedProjects()
     connectAll(connection.value)
   }
 
@@ -111,7 +115,11 @@
       setupStatus: document.getElementById('setup-status'),
       setupSteps: document.getElementById('setup-steps'),
       setupRetry: document.getElementById('setup-retry'),
-      setupCopy: document.getElementById('setup-copy')
+      setupCopy: document.getElementById('setup-copy'),
+      savedProjectsList: document.getElementById('saved-projects-list'),
+      savedCount: document.getElementById('saved-count'),
+      addProjectBtn: document.getElementById('add-project-btn'),
+      startProjectsBtn: document.getElementById('start-projects-btn')
     }
   }
 
@@ -141,6 +149,31 @@
 
       if (target.id === 'setup-copy') {
         copySetupCommands()
+        return
+      }
+
+      if (target.id === 'setup-copy') {
+        copySetupCommands()
+        return
+      }
+
+      if (target.id === 'add-project-btn') {
+        browseProjectFolder()
+        return
+      }
+
+      if (target.id === 'start-projects-btn') {
+        startAllSavedProjects()
+        return
+      }
+
+      if (target.dataset.projectStart) {
+        startSavedProject(target.dataset.projectStart, target)
+        return
+      }
+
+      if (target.dataset.projectRemove) {
+        removeSavedProject(target.dataset.projectRemove, target)
         return
       }
 
@@ -302,6 +335,187 @@
       clearTimeout(state.connectTimer)
       state.connectTimer = null
     }
+  }
+
+  function loadSavedProjects () {
+    if (!els.savedProjectsList) {
+      return
+    }
+
+    state.projectsLoading = true
+    fetch('/projects_api', { credentials: 'same-origin' })
+      .then(function (res) { return res.json() })
+      .then(function (data) {
+        state.savedProjects = data.projects || []
+        renderSavedProjects(data.dataDir)
+      })
+      .catch(function (err) {
+        toast('Could not load saved project folders.', 'error')
+      })
+      .finally(function () {
+        state.projectsLoading = false
+      })
+  }
+
+  function renderSavedProjects (dataDir) {
+    if (!els.savedProjectsList) {
+      return
+    }
+
+    els.savedCount.textContent = state.savedProjects.length + ' saved'
+
+    if (!state.savedProjects.length) {
+      els.savedProjectsList.innerHTML = '<div class="empty-state">No saved folders yet. Click “Add project folder” to pick one.</div>'
+      return
+    }
+
+    els.savedProjectsList.innerHTML = state.savedProjects.map(function (project) {
+      var entry = project.type === 'ecosystem'
+        ? 'ecosystem config'
+        : (project.script || 'index.js')
+      var actions = window.GUI.readonly ? '' : (
+        '<div class="saved-project-actions">' +
+          '<button class="btn btn-secondary" data-project-start="' + project.id + '">Start</button>' +
+          '<button class="btn btn-icon" data-project-remove="' + project.id + '" title="Remove">✕</button>' +
+        '</div>'
+      )
+
+      return (
+        '<div class="saved-project-card">' +
+          '<div class="saved-project-main">' +
+            '<strong>' + escapeHtml(project.name) + '</strong>' +
+            '<span class="saved-project-path" title="' + escapeHtml(project.path) + '">' + escapeHtml(project.path) + '</span>' +
+            '<span class="saved-project-meta">Entry: ' + escapeHtml(entry) + (dataDir ? '' : '') + '</span>' +
+          '</div>' +
+          actions +
+        '</div>'
+      )
+    }).join('')
+  }
+
+  function browseProjectFolder () {
+    if (window.GUI.readonly || state.browsingFolder) {
+      return
+    }
+
+    state.browsingFolder = true
+    if (els.addProjectBtn) {
+      els.addProjectBtn.disabled = true
+      els.addProjectBtn.textContent = 'Choose a folder…'
+    }
+
+    fetch('/projects_api/browse', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.body.error || 'Could not add project folder')
+        }
+        if (result.body.canceled) {
+          return
+        }
+        toast('Saved project folder: ' + result.body.project.name)
+        loadSavedProjects()
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+      .finally(function () {
+        state.browsingFolder = false
+        if (els.addProjectBtn) {
+          els.addProjectBtn.disabled = false
+          els.addProjectBtn.textContent = 'Add project folder'
+        }
+      })
+  }
+
+  function startSavedProject (projectId, button) {
+    if (button) {
+      button.disabled = true
+    }
+
+    fetch('/projects_api/' + encodeURIComponent(projectId) + '/start', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.body.error || 'Could not start project')
+        }
+        toast('Started ' + result.body.project.name)
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+      .finally(function () {
+        if (button) {
+          button.disabled = false
+        }
+      })
+  }
+
+  function startAllSavedProjects () {
+    if (window.GUI.readonly) {
+      return
+    }
+
+    fetch('/projects_api/start_all', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok && !result.body.results) {
+          throw new Error(result.body.error || 'Could not start saved projects')
+        }
+        var started = (result.body.results || []).filter(function (r) { return r.status === 'started' }).length
+        toast(started > 0 ? 'Started ' + started + ' saved project(s)' : 'Saved projects are already running or unavailable')
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function removeSavedProject (projectId, button) {
+    if (!confirm('Remove this saved folder from your list?')) {
+      return
+    }
+    if (button) {
+      button.disabled = true
+    }
+
+    fetch('/projects_api/' + encodeURIComponent(projectId), {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.body.error || 'Could not remove project')
+        }
+        toast('Removed saved folder')
+        loadSavedProjects()
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+      .finally(function () {
+        if (button) {
+          button.disabled = false
+        }
+      })
   }
 
   function onSocketError (err) {

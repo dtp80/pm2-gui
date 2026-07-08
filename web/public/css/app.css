@@ -205,12 +205,84 @@ body {
   transition: width 0.4s ease;
 }
 
+.section-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.section-hint {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.saved-projects-section,
 .processes-section {
   background: rgba(21, 29, 46, 0.85);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
   backdrop-filter: blur(8px);
+  margin-bottom: 24px;
+}
+
+.saved-count {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.saved-projects-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.saved-project-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.saved-project-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.saved-project-main strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.saved-project-path {
+  display: block;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-project-meta {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.saved-project-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.processes-section {
+  margin-bottom: 0;
 }
 
 .section-header {

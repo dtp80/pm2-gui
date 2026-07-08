@@ -20,38 +20,35 @@ importers:
       chalk:
         specifier: ^4.1.2
         version: 4.1.2
-      commander:
-        specifier: ^12.1.0
-        version: 12.1.0
       express:
-        specifier: ^4.21.2
+        specifier: ^4.22.2
         version: 4.22.2
       express-session:
-        specifier: ^1.18.1
+        specifier: ^1.19.0
         version: 1.19.0
       inquirer:
-        specifier: ^8.2.6
+        specifier: ^8.2.7
         version: 8.2.7(@types/node@26.1.1)
       lodash:
-        specifier: ^4.17.21
+        specifier: ^4.18.1
         version: 4.18.1
       ms:
         specifier: ^2.1.3
         version: 2.1.3
       pidusage:
-        specifier: ^4.0.0
+        specifier: ^4.0.1
         version: 4.0.1
       pm2:
         specifier: ^7.0.3
         version: 7.0.3
       pug:
-        specifier: ^3.0.3
+        specifier: ^3.0.4
         version: 3.0.4
       socket.io:
-        specifier: ^4.8.1
+        specifier: ^4.8.3
         version: 4.8.3
       socket.io-client:
-        specifier: ^4.8.1
+        specifier: ^4.8.3
         version: 4.8.3
 
 packages:
@@ -269,10 +266,6 @@ packages:
 
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
-
-  commander@12.1.0:
-    resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
-    engines: {node: '>=18'}
 
   commander@2.15.1:
     resolution: {integrity: sha512-VlfT9F3V0v+jr4yxPc5gg9s62/fIVWsd2Bk2iD435um1NlGMYdVCq+MjcXnhYq2icNOizHr1kK+5TI6H0Hy0ag==}
@@ -1213,8 +1206,6 @@ snapshots:
       color-name: 1.1.4
 
   color-name@1.1.4: {}
-
-  commander@12.1.0: {}
 
   commander@2.15.1: {}
 

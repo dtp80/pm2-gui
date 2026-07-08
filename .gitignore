@@ -1,5 +1,10 @@
 node_modules
+package-lock.json
 logs
 *.pid
 examples/*.js
 bower_components/
+
+# Per-user saved project folders and config (package-local storage)
+.user-data/
+.pm2-gui-data/

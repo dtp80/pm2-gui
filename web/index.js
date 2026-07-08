@@ -11,6 +11,7 @@ module.exports = function (options) {
   app.set('view engine', 'pug')
   app.set('views', path.join(__dirname, 'templates/views'))
   app.use(express.static(path.join(__dirname, 'public')))
+  app.use(express.json())
   app.use(session({
     secret: process.env.PM2_GUI_SESSION_SECRET || 'pm2@gui',
     resave: false,

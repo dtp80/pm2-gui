@@ -11,6 +11,7 @@ An elegant web and terminal interface for [PM2](https://pm2.keymetrics.io/).
 
 - Uses the official **PM2 programmatic API** instead of legacy axon RPC sockets
 - Modernized web dashboard (responsive layout, dark theme, process table, detail modal)
+- Saved project folders with native folder picker and per-user local storage
 - Updated stack: Socket.IO 4, Pug templates, Express 4
 - Fixed process monitor socket event mismatch from the legacy UI
 
@@ -28,6 +29,8 @@ An elegant web and terminal interface for [PM2](https://pm2.keymetrics.io/).
 # Features
 
 - Web dashboard for monitoring and controlling PM2 processes
+- Add and save project folders (native folder picker, stored per OS user)
+- Auto-start saved projects when pm2-gui launches
 - Curses-like terminal dashboard (`pm2-gui mon`)
 - Real-time system CPU and memory stats
 - Real-time process list with restart/stop/delete/save actions
@@ -39,21 +42,38 @@ An elegant web and terminal interface for [PM2](https://pm2.keymetrics.io/).
 # Requirements
 
 - Node.js **18+**
-- PM2 installed and running (`npm install -g pm2` then `pm2 ls`)
+- [pnpm](https://pnpm.io/) (for development and running from source)
+- PM2 installed and running (`pnpm add -g pm2` then `pm2 ls`)
 
 <a name="installation"></a>
 # Installation
 
+### Global install
+
+```bash
+pnpm add -g pm2-gui
+pm2-gui start
+```
+
+You can also install globally with npm if you prefer:
+
 ```bash
 npm install pm2-gui -g
 pm2-gui start
+```
 
-# or from source
+### From source
+
+This repo uses **pnpm** (`pnpm-lock.yaml`). Install dependencies with pnpm, not npm.
+
+```bash
 git clone https://github.com/Tjatse/pm2-gui.git
 cd pm2-gui
-npm install
-npm start
+pnpm install
+pnpm start
 ```
+
+User-specific saved project folders are stored outside the repo (e.g. `~/Library/Application Support/pm2-gui` on macOS).
 
 <a name="usage"></a>
 # Usage
@@ -105,6 +125,7 @@ Open `http://127.0.0.1:8088` after starting the server.
 The dashboard shows:
 
 - Host metrics (CPU, memory, uptime)
+- Saved project folders (add via native folder picker, start with one click)
 - Process table with status badges and inline actions
 - Process detail modal with info, live monitor chart, and log streaming
 
@@ -113,7 +134,7 @@ Legacy screenshots are still available in [`screenshots/`](screenshots/).
 ## Test
 
 ```bash
-npm test
+pnpm test
 ```
 
 ## License
