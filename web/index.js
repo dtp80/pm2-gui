@@ -8,11 +8,11 @@ var router = require('../lib/util/router')
 
 module.exports = function (options) {
   var app = express()
-  app.set('view engine', 'jade')
+  app.set('view engine', 'pug')
   app.set('views', path.join(__dirname, 'templates/views'))
   app.use(express.static(path.join(__dirname, 'public')))
   app.use(session({
-    secret: 'pm2@gui',
+    secret: process.env.PM2_GUI_SESSION_SECRET || 'pm2@gui',
     resave: false,
     saveUninitialized: true
   }))
@@ -21,7 +21,7 @@ module.exports = function (options) {
   }
   router(app)
 
-  var server = http.Server(app)
+  var server = http.createServer(app)
   server.listen(options.port)
   return server
 }

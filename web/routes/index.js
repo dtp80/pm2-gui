@@ -29,7 +29,8 @@ action(function (req, res) {
   res.render('index', {
     title: 'Monitor',
     connections: connections,
-    readonly: !!req._config.readonly
+    readonly: !!req._config.readonly,
+    authorization: req._config.agent && req._config.agent.authorization
   })
 })
 

@@ -1,0 +1,103 @@
+extends ../layouts/default
+
+block content
+  .app#app
+    header.app-header
+      .brand
+        .brand-mark PM2
+        .brand-text
+          h1 PM2 Monitor
+          p.brand-subtitle#pm2-version Connecting...
+      .header-actions
+        if connections.length > 1
+          select#agent-select.agent-select
+            each conn in connections
+              option(value=conn.value, selected=conn.short === 'localhost')= conn.short
+        if !readonly
+          .bulk-actions
+            button.btn.btn-secondary(data-action='restart', data-id='all', title='Restart all') Restart all
+            button.btn.btn-secondary(data-action='stop', data-id='all', title='Stop all') Stop all
+            button.btn.btn-secondary(data-action='save', data-id='all', title='Save dump') Save
+            button.btn.btn-danger(data-action='delete', data-id='all', title='Delete all') Delete all
+
+    main.app-main
+      section.stats-grid#stats-grid
+        .stat-card
+          .stat-label Hostname
+          .stat-value#stat-hostname —
+        .stat-card
+          .stat-label Platform
+          .stat-value#stat-platform —
+        .stat-card
+          .stat-label CPU Usage
+          .stat-value#stat-cpu —
+          .stat-bar
+            .stat-bar-fill#stat-cpu-bar
+        .stat-card
+          .stat-label Memory
+          .stat-value#stat-memory —
+          .stat-bar
+            .stat-bar-fill#stat-memory-bar
+        .stat-card
+          .stat-label Uptime
+          .stat-value#stat-uptime —
+        .stat-card
+          .stat-label Processes
+          .stat-value#stat-processes 0
+
+      section.processes-section
+        .section-header
+          h2 Processes
+          span.process-count#process-count 0 apps
+        .process-table-wrap
+          table.process-table
+            thead
+              tr
+                th Status
+                th Name
+                th ID
+                th Mode
+                th CPU
+                th Memory
+                th Restarts
+                th Uptime
+                if !readonly
+                  th Actions
+            tbody#process-list
+              tr.loading-row
+                td(colspan=readonly ? 8 : 9)
+                  .loader Loading processes...
+
+    .toast-container#toast-container
+
+    .modal#process-modal(hidden)
+      .modal-backdrop(data-close='modal')
+      .modal-panel
+        .modal-header
+          div
+            h3#modal-title Process
+            p#modal-subtitle
+          button.modal-close(data-close='modal', aria-label='Close') ×
+        .modal-tabs
+          button.tab.active(data-tab='info') Info
+          button.tab(data-tab='monitor') Monitor
+          button.tab(data-tab='log') Logs
+        .modal-body
+          .tab-panel.active#tab-info
+            pre#modal-info
+          .tab-panel#tab-monitor
+            canvas#monitor-chart(width='640', height='220')
+            .monitor-legend
+              span.legend-cpu CPU
+              span.legend-mem Memory
+          .tab-panel#tab-log
+            pre.log-view#modal-log Waiting for logs...
+
+  input#authorization(type='hidden', value=authorization || '')
+  script.
+    window.GUI = {
+      connections: !{JSON.stringify(connections)},
+      readonly: #{readonly ? 'true' : 'false'}
+    };
+  script(src='/socket.io/socket.io.js')
+  script(src='/js/app.js')

@@ -15,7 +15,7 @@ var Layout = require('./lib/blessed-widget/layout')
 var regLocal = /^(127\.0\.0\.1|0\.0\.0\.0|localhost)$/i
 
 // cli
-if (path.basename(process.mainModule.filename, '.js') === 'pm2-gui') {
+if (path.basename(require.main.filename, '.js') === 'pm2-gui') {
   var cmd = 'start'
   var file
   var processArgvLen = process.argv.length
@@ -72,7 +72,9 @@ function startWebServer (confFile) {
   })
   // socket.io server
   monitor.sockio = socketIO(server, {
-    origins: options.origins || '*:*'
+    cors: {
+      origin: options.origins || '*'
+    }
   })
   monitor.run()
   console.info('Web server is listening on 127.0.0.1:' + options.port)
@@ -96,7 +98,9 @@ function startAgent (confFile) {
   // socket.io server
   var sockio = socketIO()
   sockio.listen(options.port, {
-    origins: options.origins || '*:*'
+    cors: {
+      origin: options.origins || '*'
+    }
   })
   monitor.sockio = sockio
   monitor.run()
@@ -264,7 +268,9 @@ function _connectToDashboard (monitor, options, connection) {
         // start socket.io server.
         var sockio = socketIO()
         sockio.listen(connection.port, {
-          origins: options.origins || '*:*'
+          cors: {
+            origin: options.origins || '*'
+          }
         })
         // run monitor
         monitor.sockio = sockio
