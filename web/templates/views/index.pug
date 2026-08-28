@@ -13,15 +13,34 @@ block content
           select#agent-select.agent-select
             each conn in connections
               option(value=conn.value, selected=conn.short === 'localhost')= conn.short
-        button.btn.btn-icon.btn-settings#settings-btn(type='button', title='Settings', aria-label='Settings') ⚙
-        if !readonly
-          .bulk-actions
-            button.btn.btn-primary#add-project-btn(type='button') Add project folder
-            button.btn.btn-secondary#start-projects-btn(type='button') Start all saved
-            button.btn.btn-secondary(data-action='restart', data-id='all', title='Restart all') Restart all
-            button.btn.btn-secondary(data-action='stop', data-id='all', title='Stop all') Stop all
-            button.btn.btn-secondary(data-action='save', data-id='all', title='Save dump') Save
-            button.btn.btn-danger(data-action='delete', data-id='all', title='Delete all') Delete all
+        nav.toolbar(aria-label='Dashboard actions')
+          button.btn.btn-toolbar#settings-btn(type='button', title='Settings', aria-label='Settings')
+            svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+              path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z')
+              path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.36.62 1.02 1 1.74 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z')
+          if !readonly
+            span.toolbar-divider(aria-hidden='true')
+            button.btn.btn-toolbar.btn-toolbar-accent#add-project-btn(type='button', title='Add project folder', aria-label='Add project folder')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', d='M12 11v6M9 14h6')
+            button.btn.btn-toolbar#start-projects-btn(type='button', title='Start all saved', aria-label='Start all saved')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                path(fill='currentColor', d='M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z')
+            button.btn.btn-toolbar(type='button', data-action='restart', data-id='all', title='Restart all', aria-label='Restart all')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6')
+            button.btn.btn-toolbar(type='button', data-action='stop', data-id='all', title='Stop all', aria-label='Stop all')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                rect(x='6.5', y='6.5', width='11', height='11', rx='1.5', fill='currentColor')
+            button.btn.btn-toolbar(type='button', data-action='save', data-id='all', title='Save dump', aria-label='Save dump')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l4 4v12a2 2 0 0 1-2 2z')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M7 21v-8h10v8M7 3v5h8')
+            span.toolbar-divider(aria-hidden='true')
+            button.btn.btn-toolbar.btn-toolbar-danger(type='button', data-action='delete', data-id='all', title='Delete all', aria-label='Delete all')
+              svg(viewBox='0 0 24 24', width='24', height='24', aria-hidden='true')
+                path(fill='none', stroke='currentColor', stroke-width='1.75', stroke-linecap='round', stroke-linejoin='round', d='M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2')
 
     main.app-main
       section.stats-grid#stats-grid

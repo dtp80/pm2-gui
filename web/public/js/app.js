@@ -131,7 +131,10 @@
 
   function bindUI () {
     document.body.addEventListener('click', function (event) {
-      var target = event.target
+      // Clicks on SVG/path inside icon buttons must resolve to the button
+      var target = event.target.closest(
+        'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete]'
+      ) || event.target
 
       if (target.dataset.close === 'setup') {
         hideSetupModal()
@@ -276,8 +279,8 @@
         return
       }
 
-      var row = target.closest('[data-pmid]')
-      if (row && row.dataset.pmid !== undefined && !target.closest('a, button')) {
+      var row = event.target.closest('[data-pmid]')
+      if (row && row.dataset.pmid !== undefined && !event.target.closest('a, button')) {
         openProcessModal(parseInt(row.dataset.pmid, 10))
       }
     })
