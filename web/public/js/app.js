@@ -39,7 +39,8 @@
     setupData: null,
     savedProjects: [],
     projectsLoading: false,
-    browsingFolder: false
+    browsingFolder: false,
+    startup: null
   }
 
   var els = {}
@@ -169,6 +170,16 @@
 
       if (target.id === 'setting-tg-test') {
         testTelegram()
+        return
+      }
+
+      if (target.id === 'setting-startup-create') {
+        createStartupTask()
+        return
+      }
+
+      if (target.id === 'setting-startup-copy') {
+        copyStartupCommand()
         return
       }
 
@@ -1262,6 +1273,104 @@
 
     window.GUI.publicHost = s.public_host || ''
     window.GUI.publicProtocol = s.public_protocol || 'http'
+    state.startup = data.startup || null
+    renderStartupPanel(state.startup)
+  }
+
+  function renderStartupPanel (startup) {
+    var statusEl = document.getElementById('startup-status-text')
+    var metaEl = document.getElementById('startup-meta')
+    var stepsEl = document.getElementById('startup-instructions')
+    if (!statusEl) return
+
+    if (!startup || startup.error) {
+      statusEl.textContent = (startup && startup.error) || 'Could not load startup status.'
+      return
+    }
+
+    if (startup.existingTask) {
+      statusEl.textContent = 'Boot task already exists in Task Scheduler ("' + startup.taskName + '", id ' + startup.existingTask.id + ').'
+    } else if (startup.bootEnabled) {
+      statusEl.textContent = 'Boot start was configured earlier via ' + (startup.lastMethod || 'an automated method') + '.'
+    } else if (startup.synology) {
+      statusEl.textContent = 'Synology detected. You can try automatic creation, or follow the manual steps.'
+    } else {
+      statusEl.textContent = 'Not running on Synology. A start script can still be generated; use crontab or a system service for boot.'
+    }
+
+    if (metaEl) {
+      metaEl.innerHTML =
+        '<div class="startup-kv"><span>App dir</span><code>' + escapeHtml(startup.appDir || '') + '</code></div>' +
+        '<div class="startup-kv"><span>User</span><code>' + escapeHtml(startup.owner || '') + '</code></div>' +
+        '<div class="startup-kv"><span>Command</span><code id="startup-command">' + escapeHtml(startup.command || '') + '</code></div>' +
+        '<div class="startup-kv"><span>Script</span><code>' + escapeHtml(startup.scriptPath || '') + '</code></div>'
+    }
+
+    if (stepsEl && startup.instructions && Array.isArray(startup.instructions.steps)) {
+      stepsEl.innerHTML = startup.instructions.steps.map(function (step, index) {
+        return '<li><span class="step-num">' + (index + 1) + '</span><div><strong>' + escapeHtml(step) + '</strong></div></li>'
+      }).join('')
+    }
+  }
+
+  function createStartupTask () {
+    var btn = document.getElementById('setting-startup-create')
+    var resultEl = document.getElementById('startup-result')
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = 'Creating…'
+    }
+    fetch('/settings_api/startup', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not create boot task')
+        if (resultEl) {
+          resultEl.hidden = false
+          if (result.body.ok) {
+            resultEl.className = 'startup-result ok'
+            resultEl.textContent = 'Boot start configured via ' + (result.body.method || 'automation') +
+              (result.body.note ? '. ' + result.body.note : '')
+            toast('Boot start configured')
+          } else {
+            resultEl.className = 'startup-result fail'
+            resultEl.textContent = (result.body.error || result.body.note || 'Automatic creation failed.') +
+              ' Follow the manual steps below.'
+            toast(result.body.error || 'Automatic creation failed — see manual steps', 'error')
+          }
+        }
+        loadSettings()
+      })
+      .catch(function (err) {
+        if (resultEl) {
+          resultEl.hidden = false
+          resultEl.className = 'startup-result fail'
+          resultEl.textContent = err.message
+        }
+        toast(err.message, 'error')
+      })
+      .finally(function () {
+        if (btn) {
+          btn.disabled = false
+          btn.textContent = 'Create / update boot task'
+        }
+      })
+  }
+
+  function copyStartupCommand () {
+    var commandEl = document.getElementById('startup-command')
+    var command = commandEl ? commandEl.textContent : (state.startup && state.startup.command) || ''
+    if (!command) {
+      toast('No command available yet.', 'error')
+      return
+    }
+    navigator.clipboard.writeText(command).then(function () {
+      toast('Boot command copied')
+    }).catch(function () {
+      toast('Could not copy automatically.', 'error')
+    })
   }
 
   function setVal (id, value) {

@@ -8,6 +8,7 @@ var authService = require('../../lib/auth-service')
 var telegram = require('../../lib/telegram')
 var runtime = require('../../lib/runtime')
 var db = require('../../lib/db')
+var synologyBoot = require('../../lib/synology-boot')
 
 function denyIfReadonly (req, res) {
   if (req._config && req._config.readonly) {
@@ -181,17 +182,20 @@ action('get', function settings_api (req, res) { // eslint-disable-line camelcas
   if (!authService.isAuthenticated(req)) {
     return res.status(401).json({ error: 'Authentication required' })
   }
-  try {
+    try {
     var allSettings = settings.getSettings()
     delete allSettings.session_secret
-    res.json({
-      settings: allSettings,
-      auth: authService.getAuthConfig(),
-      telegram: telegram.getConfig(),
-      users: authService.listUsers(),
-      user: currentUser(req),
-      dataDir: projectsStore.getDataDir(),
-      dbPath: db.getDbPath()
+    synologyBoot.getStatus(function (bootErr, startup) {
+      res.json({
+        settings: allSettings,
+        auth: authService.getAuthConfig(),
+        telegram: telegram.getConfig(),
+        users: authService.listUsers(),
+        user: currentUser(req),
+        dataDir: projectsStore.getDataDir(),
+        dbPath: db.getDbPath(),
+        startup: bootErr ? { error: bootErr.message } : startup
+      })
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -241,6 +245,30 @@ action('post', 'settings_api/telegram/test', function settings_telegram_test_api
       return res.status(500).json({ error: err.message })
     }
     res.json({ status: 'ok' })
+  })
+})
+
+action('get', 'settings_api/startup', function settings_startup_get_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  synologyBoot.getStatus(function (err, status) {
+    if (err) {
+      return res.status(500).json({ error: err.message })
+    }
+    res.json(status)
+  })
+})
+
+action('post', 'settings_api/startup', function settings_startup_post_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  synologyBoot.setupBootTask({ preferCrontab: true }, function (err, result) {
+    if (err) {
+      return res.status(500).json({ error: err.message })
+    }
+    res.json(result)
   })
 })
 

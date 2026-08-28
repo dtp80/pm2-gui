@@ -101,6 +101,7 @@ block content
           button.tab.active(data-settings-tab='general') General
           button.tab(data-settings-tab='auth') Authentication
           button.tab(data-settings-tab='telegram') Telegram
+          button.tab(data-settings-tab='startup') Startup
           button.tab(data-settings-tab='security') Security
         .modal-body.settings-body
           .tab-panel.active#settings-tab-general
@@ -165,6 +166,17 @@ block content
                 input#setting-tg-online(type='checkbox')
                 span Notify on online
             button.btn.btn-secondary#setting-tg-test(type='button') Send test message
+
+          .tab-panel#settings-tab-startup
+            h4 Start pm2-gui on boot
+            p.add-project-hint#startup-status-text Detecting environment…
+            .startup-meta#startup-meta
+            .setup-actions
+              button.btn.btn-primary#setting-startup-create(type='button') Create / update boot task
+              button.btn.btn-secondary#setting-startup-copy(type='button') Copy command
+            p.add-project-hint If automatic creation fails (common without DSM admin rights), use the manual steps below.
+            ol.setup-steps#startup-instructions
+            .startup-result#startup-result(hidden)
 
           .tab-panel#settings-tab-security
             h4 Change password
@@ -259,4 +271,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.4.0')
+  script(src='/js/app.js?v=0.4.1')
