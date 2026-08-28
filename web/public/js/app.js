@@ -117,7 +117,11 @@
       setupRetry: document.getElementById('setup-retry'),
       setupCopy: document.getElementById('setup-copy'),
       addProjectBtn: document.getElementById('add-project-btn'),
-      startProjectsBtn: document.getElementById('start-projects-btn')
+      startProjectsBtn: document.getElementById('start-projects-btn'),
+      addProjectModal: document.getElementById('add-project-modal'),
+      addProjectPath: document.getElementById('add-project-path'),
+      addProjectBrowse: document.getElementById('add-project-browse'),
+      addProjectSubmit: document.getElementById('add-project-submit')
     }
   }
 
@@ -127,6 +131,11 @@
 
       if (target.dataset.close === 'setup') {
         hideSetupModal()
+        return
+      }
+
+      if (target.dataset.close === 'add-project') {
+        hideAddProjectModal()
         return
       }
 
@@ -150,13 +159,18 @@
         return
       }
 
-      if (target.id === 'setup-copy') {
-        copySetupCommands()
+      if (target.id === 'add-project-btn') {
+        showAddProjectModal()
         return
       }
 
-      if (target.id === 'add-project-btn') {
+      if (target.id === 'add-project-browse') {
         browseProjectFolder()
+        return
+      }
+
+      if (target.id === 'add-project-submit') {
+        submitProjectPath()
         return
       }
 
@@ -389,15 +403,41 @@
     })
   }
 
+  function showAddProjectModal () {
+    if (!els.addProjectModal || window.GUI.readonly) {
+      return
+    }
+    els.addProjectModal.hidden = false
+    if (els.addProjectPath) {
+      els.addProjectPath.value = els.addProjectPath.value || ''
+      setTimeout(function () { els.addProjectPath.focus() }, 50)
+      if (!els.addProjectPath.dataset.boundEnter) {
+        els.addProjectPath.dataset.boundEnter = '1'
+        els.addProjectPath.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            submitProjectPath()
+          }
+        })
+      }
+    }
+  }
+
+  function hideAddProjectModal () {
+    if (els.addProjectModal) {
+      els.addProjectModal.hidden = true
+    }
+  }
+
   function browseProjectFolder () {
     if (window.GUI.readonly || state.browsingFolder) {
       return
     }
 
     state.browsingFolder = true
-    if (els.addProjectBtn) {
-      els.addProjectBtn.disabled = true
-      els.addProjectBtn.textContent = 'Choose a folder…'
+    if (els.addProjectBrowse) {
+      els.addProjectBrowse.disabled = true
+      els.addProjectBrowse.textContent = 'Browsing…'
     }
 
     fetch('/projects_api/browse', {
@@ -407,12 +447,64 @@
       .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
       .then(function (result) {
         if (!result.ok) {
-          throw new Error(result.body.error || 'Could not add project folder')
+          throw new Error(result.body.error || 'Could not open folder picker')
         }
         if (result.body.canceled) {
           return
         }
+        if (result.body.project && result.body.project.path && els.addProjectPath) {
+          els.addProjectPath.value = result.body.project.path
+        }
         toast('Saved project folder: ' + result.body.project.name)
+        hideAddProjectModal()
+        loadSavedProjects()
+      })
+      .catch(function (err) {
+        toast(err.message + ' Use the path field instead.', 'error')
+      })
+      .finally(function () {
+        state.browsingFolder = false
+        if (els.addProjectBrowse) {
+          els.addProjectBrowse.disabled = false
+          els.addProjectBrowse.textContent = 'Browse'
+        }
+      })
+  }
+
+  function submitProjectPath () {
+    if (window.GUI.readonly || state.browsingFolder) {
+      return
+    }
+
+    var folder = els.addProjectPath ? els.addProjectPath.value.trim() : ''
+    if (!folder) {
+      toast('Enter a project folder path.', 'error')
+      if (els.addProjectPath) els.addProjectPath.focus()
+      return
+    }
+
+    state.browsingFolder = true
+    if (els.addProjectSubmit) {
+      els.addProjectSubmit.disabled = true
+      els.addProjectSubmit.textContent = 'Adding…'
+    }
+
+    fetch('/projects_api/add', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: folder })
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.body.error || 'Could not add project folder')
+        }
+        toast('Saved project folder: ' + result.body.project.name)
+        if (els.addProjectPath) {
+          els.addProjectPath.value = ''
+        }
+        hideAddProjectModal()
         loadSavedProjects()
       })
       .catch(function (err) {
@@ -420,9 +512,9 @@
       })
       .finally(function () {
         state.browsingFolder = false
-        if (els.addProjectBtn) {
-          els.addProjectBtn.disabled = false
-          els.addProjectBtn.textContent = 'Add project folder'
+        if (els.addProjectSubmit) {
+          els.addProjectSubmit.disabled = false
+          els.addProjectSubmit.textContent = 'Add project'
         }
       })
   }

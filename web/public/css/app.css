@@ -639,6 +639,50 @@ body {
   color: #cbd5e1;
 }
 
+.add-project-panel {
+  width: min(560px, 100%);
+}
+
+.add-project-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.add-project-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.add-project-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.88rem;
+}
+
+.add-project-input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.add-project-hint {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
 .setup-actions {
   display: flex;
   gap: 10px;
