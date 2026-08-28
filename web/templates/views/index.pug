@@ -13,6 +13,7 @@ block content
           select#agent-select.agent-select
             each conn in connections
               option(value=conn.value, selected=conn.short === 'localhost')= conn.short
+        button.btn.btn-icon.btn-settings#settings-btn(type='button', title='Settings', aria-label='Settings') ⚙
         if !readonly
           .bulk-actions
             button.btn.btn-primary#add-project-btn(type='button') Add project folder
@@ -88,6 +89,110 @@ block content
             button.btn.btn-primary#setup-retry(type='button') Retry connection
             button.btn.btn-secondary#setup-copy(type='button') Copy setup commands
 
+    .modal#settings-modal(hidden)
+      .modal-backdrop(data-close='settings')
+      .modal-panel.settings-panel
+        .modal-header
+          div
+            h3 Settings
+            p#settings-subtitle Preferences are stored in your local SQLite database
+          button.modal-close(data-close='settings', aria-label='Close') ×
+        .modal-tabs#settings-tabs
+          button.tab.active(data-settings-tab='general') General
+          button.tab(data-settings-tab='auth') Authentication
+          button.tab(data-settings-tab='telegram') Telegram
+          button.tab(data-settings-tab='security') Security
+        .modal-body.settings-body
+          .tab-panel.active#settings-tab-general
+            label.add-project-label(for='setting-public-host') Public host (for open-service links)
+            input#setting-public-host.add-project-input(type='text', placeholder='192.168.1.50 or nas.local')
+            label.add-project-label(for='setting-public-protocol') Public protocol
+            select#setting-public-protocol.agent-select
+              option(value='http') http
+              option(value='https') https
+            label.add-project-label(for='setting-refresh') System refresh interval
+            input#setting-refresh.add-project-input(type='text', placeholder='5s')
+            label.add-project-label(for='setting-process-refresh') Process metrics interval
+            input#setting-process-refresh.add-project-input(type='text', placeholder='3s')
+            label.settings-check
+              input#setting-readonly(type='checkbox')
+              span Read-only mode (hide process actions)
+            p.add-project-hint#settings-data-dir
+
+          .tab-panel#settings-tab-auth
+            label.settings-check
+              input#setting-auth-enabled(type='checkbox')
+              span Enable authentication
+            label.settings-check
+              input#setting-require-2fa(type='checkbox')
+              span Enforce 2FA for all users
+            label.add-project-label(for='setting-session-hours') Session timeout (hours)
+            input#setting-session-hours.add-project-input(type='number', min='1', max='720')
+            label.add-project-label(for='setting-max-attempts') Max login attempts
+            input#setting-max-attempts.add-project-input(type='number', min='1', max='50')
+            label.add-project-label(for='setting-lockout') Lockout minutes
+            input#setting-lockout.add-project-input(type='number', min='1', max='1440')
+            hr.settings-divider
+            h4 Create user
+            .add-project-row
+              input#setting-new-username.add-project-input(type='text', placeholder='Username')
+              input#setting-new-password.add-project-input(type='password', placeholder='Password (min 8)')
+              button.btn.btn-secondary#setting-create-user(type='button') Add
+            ul.settings-user-list#settings-user-list
+
+          .tab-panel#settings-tab-telegram
+            label.settings-check
+              input#setting-tg-enabled(type='checkbox')
+              span Enable Telegram notifications
+            label.add-project-label(for='setting-tg-token') Bot token
+            input#setting-tg-token.add-project-input(type='password', placeholder='123456:ABC...', autocomplete='off')
+            label.add-project-label(for='setting-tg-chat') Chat ID
+            input#setting-tg-chat.add-project-input(type='text', placeholder='e.g. 123456789')
+            .settings-checks
+              label.settings-check
+                input#setting-tg-restart(type='checkbox')
+                span Notify on restart
+              label.settings-check
+                input#setting-tg-error(type='checkbox')
+                span Notify on error
+              label.settings-check
+                input#setting-tg-stop(type='checkbox')
+                span Notify on stop
+              label.settings-check
+                input#setting-tg-exit(type='checkbox')
+                span Notify on exit
+              label.settings-check
+                input#setting-tg-online(type='checkbox')
+                span Notify on online
+            button.btn.btn-secondary#setting-tg-test(type='button') Send test message
+
+          .tab-panel#settings-tab-security
+            h4 Change password
+            label.add-project-label(for='setting-cur-password') Current password
+            input#setting-cur-password.add-project-input(type='password', autocomplete='current-password')
+            label.add-project-label(for='setting-new-password') New password
+            input#setting-new-password.add-project-input(type='password', autocomplete='new-password')
+            button.btn.btn-secondary#setting-change-password(type='button') Update password
+            hr.settings-divider
+            h4 Two-factor authentication (TOTP)
+            p.add-project-hint Use Google Authenticator, 1Password, or Authy.
+            .setup-actions
+              button.btn.btn-secondary#setting-2fa-begin(type='button') Set up 2FA
+              button.btn.btn-danger#setting-2fa-disable(type='button') Disable 2FA
+            .settings-2fa-setup#settings-2fa-setup(hidden)
+              img#setting-2fa-qr(alt='2FA QR code', width='180', height='180')
+              p.add-project-hint#setting-2fa-secret
+              label.add-project-label(for='setting-2fa-code') Confirm with a code
+              .add-project-row
+                input#setting-2fa-code.add-project-input(type='text', inputmode='numeric', maxlength='8')
+                button.btn.btn-primary#setting-2fa-confirm(type='button') Confirm
+            hr.settings-divider
+            button.btn.btn-secondary#setting-logout(type='button') Sign out
+
+          .setup-actions.settings-footer
+            button.btn.btn-primary#settings-save(type='button') Save settings
+            button.btn.btn-secondary(type='button', data-close='settings') Close
+
     .modal#add-project-modal(hidden)
       .modal-backdrop(data-close='add-project')
       .modal-panel.add-project-panel
@@ -107,6 +212,15 @@ block content
             )
             button.btn.btn-secondary#add-project-browse(type='button', title='Open native folder picker when available') Browse
           p.add-project-hint On Synology, type an absolute path such as /volume1/web/my-app. Do not add the pm2-gui folder itself — it is already running as this dashboard.
+          label.add-project-label(for='add-project-port') Service port (optional)
+          input#add-project-port.add-project-input(
+            type='number',
+            placeholder='e.g. 3000',
+            min='1',
+            max='65535',
+            autocomplete='off'
+          )
+          p.add-project-hint Used for the open-in-browser link. Leave blank if the app sets PORT in its environment.
           .setup-actions
             button.btn.btn-primary#add-project-submit(type='button') Add project
             button.btn.btn-secondary(type='button', data-close='add-project') Cancel
@@ -138,7 +252,11 @@ block content
   script.
     window.GUI = {
       connections: !{JSON.stringify(connections)},
-      readonly: #{readonly ? 'true' : 'false'}
+      readonly: #{readonly ? 'true' : 'false'},
+      publicHost: !{JSON.stringify((web && web.public_host) || '')},
+      publicProtocol: !{JSON.stringify((web && web.public_protocol) || '')},
+      authEnabled: #{authEnabled ? 'true' : 'false'},
+      user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.3.3')
+  script(src='/js/app.js?v=0.4.0')

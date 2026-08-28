@@ -121,7 +121,10 @@
       addProjectModal: document.getElementById('add-project-modal'),
       addProjectPath: document.getElementById('add-project-path'),
       addProjectBrowse: document.getElementById('add-project-browse'),
-      addProjectSubmit: document.getElementById('add-project-submit')
+      addProjectSubmit: document.getElementById('add-project-submit'),
+      addProjectPort: document.getElementById('add-project-port'),
+      settingsBtn: document.getElementById('settings-btn'),
+      settingsModal: document.getElementById('settings-modal')
     }
   }
 
@@ -136,6 +139,61 @@
 
       if (target.dataset.close === 'add-project') {
         hideAddProjectModal()
+        return
+      }
+
+      if (target.dataset.close === 'settings') {
+        hideSettingsModal()
+        return
+      }
+
+      if (target.dataset.settingsTab) {
+        switchSettingsTab(target.dataset.settingsTab)
+        return
+      }
+
+      if (target.id === 'settings-btn') {
+        showSettingsModal()
+        return
+      }
+
+      if (target.id === 'settings-save') {
+        saveSettings()
+        return
+      }
+
+      if (target.id === 'setting-create-user') {
+        createSettingsUser()
+        return
+      }
+
+      if (target.id === 'setting-tg-test') {
+        testTelegram()
+        return
+      }
+
+      if (target.id === 'setting-change-password') {
+        changeSettingsPassword()
+        return
+      }
+
+      if (target.id === 'setting-2fa-begin') {
+        begin2faSetup()
+        return
+      }
+
+      if (target.id === 'setting-2fa-confirm') {
+        confirm2faSetup()
+        return
+      }
+
+      if (target.id === 'setting-2fa-disable') {
+        disable2fa()
+        return
+      }
+
+      if (target.id === 'setting-logout') {
+        logout()
         return
       }
 
@@ -208,7 +266,7 @@
       }
 
       var row = target.closest('[data-pmid]')
-      if (row && row.dataset.pmid !== undefined) {
+      if (row && row.dataset.pmid !== undefined && !target.closest('a, button')) {
         openProcessModal(parseInt(row.dataset.pmid, 10))
       }
     })
@@ -503,6 +561,11 @@
       return
     }
 
+    var payload = { path: folder }
+    if (els.addProjectPort && els.addProjectPort.value.trim()) {
+      payload.servicePort = parseInt(els.addProjectPort.value.trim(), 10)
+    }
+
     state.browsingFolder = true
     if (els.addProjectSubmit) {
       els.addProjectSubmit.disabled = true
@@ -513,7 +576,7 @@
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: folder })
+      body: JSON.stringify(payload)
     })
       .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
       .then(function (result) {
@@ -523,6 +586,9 @@
         toast('Saved project folder: ' + result.body.project.name)
         if (els.addProjectPath) {
           els.addProjectPath.value = ''
+        }
+        if (els.addProjectPort) {
+          els.addProjectPort.value = ''
         }
         hideAddProjectModal()
         loadSavedProjects()
@@ -679,7 +745,7 @@
     var pathHint = project ? project.path : (env.pm_cwd || '')
     var actions = window.GUI.readonly ? '' : (
       '<td class="row-actions">' +
-        renderProcessActions(status, proc.pm_id) +
+        renderProcessActions(status, proc, project) +
       '</td>'
     )
 
@@ -735,11 +801,79 @@
     return html
   }
 
-  function renderProcessActions (status, id) {
+  function renderProcessActions (status, proc, project) {
+    var html = ''
     if (status === 'online') {
-      return actionButton('restart', id) + actionButton('stop', id) + actionButton('delete', id)
+      var serviceUrl = resolveServiceUrl(proc, project)
+      if (serviceUrl) {
+        html += openServiceLink(serviceUrl)
+      }
+      html += actionButton('restart', proc.pm_id) + actionButton('stop', proc.pm_id) + actionButton('delete', proc.pm_id)
+    } else {
+      html += actionButton('start', proc.pm_id) + actionButton('delete', proc.pm_id)
     }
-    return actionButton('start', id) + actionButton('delete', id)
+    return html
+  }
+
+  function getPublicHost () {
+    var host = location.hostname
+    if (window.GUI.publicHost && (!host || host === 'localhost' || host === '127.0.0.1')) {
+      return window.GUI.publicHost
+    }
+    return host
+  }
+
+  function getPublicProtocol () {
+    if (window.GUI.publicProtocol) {
+      var protocol = String(window.GUI.publicProtocol).replace(/:$/, '')
+      return protocol + ':'
+    }
+    return location.protocol || 'http:'
+  }
+
+  function extractPortFromEnv (env) {
+    if (!env) {
+      return null
+    }
+    var keys = ['PORT', 'port', 'HTTP_PORT', 'SERVER_PORT', 'APP_PORT', 'WEB_PORT', 'NODE_PORT']
+    for (var i = 0; i < keys.length; i++) {
+      if (env[keys[i]] != null && env[keys[i]] !== '') {
+        var port = parseInt(env[keys[i]], 10)
+        if (port > 0 && port < 65536) {
+          return port
+        }
+      }
+    }
+    return null
+  }
+
+  function resolveServiceUrl (proc, project) {
+    if (project && project.serviceUrl) {
+      return project.serviceUrl
+    }
+
+    var port = (project && project.servicePort) || extractPortFromEnv(proc.pm2_env && proc.pm2_env.env)
+    if (!port) {
+      return null
+    }
+
+    var host = getPublicHost()
+    if (!host) {
+      return null
+    }
+
+    var path = (project && project.servicePath) || '/'
+    if (path.charAt(0) !== '/') {
+      path = '/' + path
+    }
+
+    return getPublicProtocol() + '//' + host + ':' + port + path
+  }
+
+  function openServiceLink (url) {
+    return (
+      '<a class="btn btn-icon btn-open" href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer" title="Open ' + escapeAttr(url) + '">↗</a>'
+    )
   }
 
   function actionButton (action, id) {
@@ -1054,11 +1188,290 @@
     return secs + 's'
   }
 
+  function showSettingsModal () {
+    if (!els.settingsModal) return
+    els.settingsModal.hidden = false
+    switchSettingsTab('general')
+    loadSettings()
+  }
+
+  function hideSettingsModal () {
+    if (els.settingsModal) els.settingsModal.hidden = true
+  }
+
+  function switchSettingsTab (name) {
+    document.querySelectorAll('#settings-tabs .tab').forEach(function (tab) {
+      tab.classList.toggle('active', tab.dataset.settingsTab === name)
+    })
+    document.querySelectorAll('#settings-modal .settings-body .tab-panel').forEach(function (panel) {
+      panel.classList.toggle('active', panel.id === 'settings-tab-' + name)
+    })
+  }
+
+  function loadSettings () {
+    fetch('/settings_api', { credentials: 'same-origin' })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not load settings')
+        fillSettingsForm(result.body)
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function fillSettingsForm (data) {
+    var s = data.settings || {}
+    var a = data.auth || {}
+    var t = data.telegram || {}
+
+    setVal('setting-public-host', s.public_host || '')
+    setVal('setting-public-protocol', s.public_protocol || 'http')
+    setVal('setting-refresh', s.refresh || '5s')
+    setVal('setting-process-refresh', s.process_refresh || '3s')
+    setChecked('setting-readonly', !!s.readonly)
+
+    setChecked('setting-auth-enabled', !!a.enabled)
+    setChecked('setting-require-2fa', !!a.require2fa)
+    setVal('setting-session-hours', a.sessionTimeoutHours || 24)
+    setVal('setting-max-attempts', a.maxLoginAttempts || 5)
+    setVal('setting-lockout', a.lockoutMinutes || 15)
+
+    setChecked('setting-tg-enabled', !!t.enabled)
+    setVal('setting-tg-token', t.botToken || '')
+    setVal('setting-tg-chat', t.chatId || '')
+    setChecked('setting-tg-restart', t.notifyRestart !== false)
+    setChecked('setting-tg-error', t.notifyError !== false)
+    setChecked('setting-tg-stop', t.notifyStop !== false)
+    setChecked('setting-tg-exit', t.notifyExit !== false)
+    setChecked('setting-tg-online', !!t.notifyOnline)
+
+    var hint = document.getElementById('settings-data-dir')
+    if (hint) {
+      hint.textContent = 'Database: ' + (data.dbPath || '—')
+    }
+
+    var list = document.getElementById('settings-user-list')
+    if (list) {
+      list.innerHTML = (data.users || []).map(function (u) {
+        return '<li><span><strong>' + escapeHtml(u.username) + '</strong>' +
+          (u.totpEnabled ? ' · 2FA on' : ' · 2FA off') +
+          '</span></li>'
+      }).join('') || '<li><span>No users yet</span></li>'
+    }
+
+    window.GUI.publicHost = s.public_host || ''
+    window.GUI.publicProtocol = s.public_protocol || 'http'
+  }
+
+  function setVal (id, value) {
+    var el = document.getElementById(id)
+    if (el) el.value = value
+  }
+
+  function setChecked (id, value) {
+    var el = document.getElementById(id)
+    if (el) el.checked = !!value
+  }
+
+  function getVal (id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+
+  function getChecked (id) {
+    var el = document.getElementById(id)
+    return !!(el && el.checked)
+  }
+
+  function saveSettings () {
+    var payload = {
+      settings: {
+        public_host: getVal('setting-public-host').trim(),
+        public_protocol: getVal('setting-public-protocol'),
+        refresh: getVal('setting-refresh').trim() || '5s',
+        process_refresh: getVal('setting-process-refresh').trim() || '3s',
+        readonly: getChecked('setting-readonly')
+      },
+      auth: {
+        enabled: getChecked('setting-auth-enabled'),
+        require2fa: getChecked('setting-require-2fa'),
+        sessionTimeoutHours: parseInt(getVal('setting-session-hours'), 10) || 24,
+        maxLoginAttempts: parseInt(getVal('setting-max-attempts'), 10) || 5,
+        lockoutMinutes: parseInt(getVal('setting-lockout'), 10) || 15
+      },
+      telegram: {
+        enabled: getChecked('setting-tg-enabled'),
+        botToken: getVal('setting-tg-token').trim(),
+        chatId: getVal('setting-tg-chat').trim(),
+        notifyRestart: getChecked('setting-tg-restart'),
+        notifyError: getChecked('setting-tg-error'),
+        notifyStop: getChecked('setting-tg-stop'),
+        notifyExit: getChecked('setting-tg-exit'),
+        notifyOnline: getChecked('setting-tg-online')
+      }
+    }
+
+    fetch('/settings_api', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not save settings')
+        fillSettingsForm(result.body)
+        toast('Settings saved')
+        if (payload.settings.readonly !== window.GUI.readonly) {
+          toast('Read-only mode change applies after reload')
+        }
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function createSettingsUser () {
+    fetch('/settings_api/users', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: getVal('setting-new-username').trim(),
+        password: getVal('setting-new-password')
+      })
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not create user')
+        setVal('setting-new-username', '')
+        setVal('setting-new-password', '')
+        toast('User created')
+        loadSettings()
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function testTelegram () {
+    fetch('/settings_api/telegram/test', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Telegram test failed')
+        toast('Test message sent')
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function changeSettingsPassword () {
+    fetch('/settings_api/password', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        currentPassword: getVal('setting-cur-password'),
+        newPassword: getVal('setting-new-password')
+      })
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not change password')
+        setVal('setting-cur-password', '')
+        setVal('setting-new-password', '')
+        toast('Password updated')
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function begin2faSetup () {
+    fetch('/settings_api/2fa/begin', {
+      method: 'POST',
+      credentials: 'same-origin'
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not start 2FA setup')
+        var setup = document.getElementById('settings-2fa-setup')
+        var qr = document.getElementById('setting-2fa-qr')
+        var secret = document.getElementById('setting-2fa-secret')
+        if (setup) setup.hidden = false
+        if (qr) qr.src = result.body.qrDataUrl
+        if (secret) secret.textContent = 'Secret: ' + result.body.secret
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function confirm2faSetup () {
+    fetch('/settings_api/2fa/confirm', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: getVal('setting-2fa-code') })
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not confirm 2FA')
+        toast('2FA enabled')
+        var setup = document.getElementById('settings-2fa-setup')
+        if (setup) setup.hidden = true
+        loadSettings()
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function disable2fa () {
+    var password = window.prompt('Enter your password to disable 2FA')
+    if (password == null) return
+    var code = window.prompt('Enter a current 2FA code')
+    if (code == null) return
+    fetch('/settings_api/2fa/disable', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password, code: code })
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not disable 2FA')
+        toast('2FA disabled')
+        loadSettings()
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function logout () {
+    fetch('/auth_api/logout', {
+      method: 'POST',
+      credentials: 'same-origin'
+    }).finally(function () {
+      window.location.href = '/auth'
+    })
+  }
+
   function escapeHtml (value) {
     return String(value)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
+  }
+
+  function escapeAttr (value) {
+    return escapeHtml(value)
   }
 })()

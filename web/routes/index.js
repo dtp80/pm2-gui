@@ -3,6 +3,11 @@ var Monitor = require('../../lib/monitor')
 var setupStatus = require('../../lib/setup-status')
 var folderPicker = require('../../lib/folder-picker')
 var projectsStore = require('../../lib/projects-store')
+var settings = require('../../lib/settings')
+var authService = require('../../lib/auth-service')
+var telegram = require('../../lib/telegram')
+var runtime = require('../../lib/runtime')
+var db = require('../../lib/db')
 
 function denyIfReadonly (req, res) {
   if (req._config && req._config.readonly) {
@@ -12,19 +17,43 @@ function denyIfReadonly (req, res) {
   return false
 }
 
-// Authorization
+function publicWebConfig (req) {
+  var fromDb = settings.getPublicConfig()
+  var fromIni = (req._config && req._config.web) || {}
+  return {
+    public_host: fromDb.publicHost || fromIni.public_host || '',
+    public_protocol: fromDb.publicProtocol || fromIni.public_protocol || 'http'
+  }
+}
+
+function currentUser (req) {
+  if (!req.session || !req.session.userId) return null
+  var user = authService.findUserById(req.session.userId)
+  if (!user) return null
+  return {
+    id: user.id,
+    username: user.username,
+    totpEnabled: !!user.totp_enabled
+  }
+}
+
+// Authorization page
 action(function auth (req, res) {
-  if (!req._config.agent || (req._config.agent.authorization === req.session['authorization'])) {
+  if (authService.isAuthenticated(req)) {
     return res.redirect('/')
   }
+  var config = authService.getAuthConfig()
   res.render('auth', {
-    title: 'Authorization'
+    title: 'Sign in',
+    authEnabled: config.enabled,
+    needsSetup: config.enabled && config.userCount === 0,
+    require2fa: config.require2fa
   })
 })
 
 // Index
 action(function (req, res) {
-  if (req._config.agent && (req._config.agent.authorization !== req.session['authorization'])) {
+  if (!authService.isAuthenticated(req)) {
     return res.redirect('/auth')
   }
   var options = _.clone(req._config)
@@ -37,40 +66,108 @@ action(function (req, res) {
     c.value = Monitor.toConnectionString(Monitor.parseConnectionString(c.value))
     connections.push(c)
   })
+
+  var pub = publicWebConfig(req)
+  var authConfig = authService.getAuthConfig()
   res.render('index', {
     title: 'Monitor',
     connections: connections,
     readonly: !!req._config.readonly,
-    authorization: req._config.agent && req._config.agent.authorization
+    authorization: '',
+    web: pub,
+    authEnabled: authConfig.enabled,
+    user: currentUser(req)
   })
 })
 
-// API
-action(function auth_api (req, res) { // eslint-disable-line camelcase
-  if (!req._config.agent || !req._config.agent.authorization) {
-    return res.json({
-      error: 'Can not found agent[.authorization] config, no need to authorize!'
-    })
-  }
-  if (!req.query || !req.query.authorization) {
-    return res.json({
-      error: 'Authorization is required!'
-    })
-  }
+// Login / logout / setup
+action('post', 'auth_api/login', function auth_login_api (req, res) { // eslint-disable-line camelcase
+  try {
+    db.open()
+    var body = req.body || {}
+    var result = authService.login(body.username, body.password, body.totp)
 
-  if (req._config.agent && req.query.authorization === req._config.agent.authorization) {
-    req.session['authorization'] = req.query.authorization
-    return res.json({
-      status: 200
-    })
+    if (result.authDisabled) {
+      return res.json({ status: 200, authDisabled: true })
+    }
+
+    if (result.needs2fa || result.needs2faSetup) {
+      req.session.pendingUserId = result.userId
+      return res.json({
+        status: 202,
+        needs2fa: !!result.needs2fa,
+        needs2faSetup: !!result.needs2faSetup,
+        username: result.username
+      })
+    }
+
+    if (result.legacy) {
+      req.session.authorization = body.password
+      return res.json({ status: 200, legacy: true })
+    }
+
+    if (result.ok && result.user) {
+      req.session.userId = result.user.id
+      req.session.username = result.user.username
+      delete req.session.pendingUserId
+      return res.json({ status: 200, user: result.user })
+    }
+
+    return res.status(401).json({ error: 'Authentication failed' })
+  } catch (err) {
+    res.status(401).json({ error: err.message })
   }
-  return res.json({
-    error: 'Failed, authorization is incorrect.'
+})
+
+action('post', 'auth_api/setup', function auth_setup_api (req, res) { // eslint-disable-line camelcase
+  try {
+    var config = authService.getAuthConfig()
+    if (config.userCount > 0) {
+      return res.status(400).json({ error: 'Admin user already exists' })
+    }
+    var body = req.body || {}
+    authService.updateAuthConfig({ enabled: true })
+    var user = authService.createUser(body.username, body.password)
+    req.session.userId = user.id
+    req.session.username = user.username
+    res.json({ status: 200, user: user })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'auth_api/logout', function auth_logout_api (req, res) { // eslint-disable-line camelcase
+  req.session.destroy(function () {
+    res.json({ status: 200 })
   })
+})
+
+// Legacy token endpoint (compat)
+action(function auth_api (req, res) { // eslint-disable-line camelcase
+  try {
+    var token = req.query && req.query.authorization
+    if (!token) {
+      return res.json({ error: 'Authorization is required!' })
+    }
+    var result = authService.login('legacy', token)
+    if (result.ok) {
+      req.session.authorization = token
+      if (result.user) {
+        req.session.userId = result.user.id
+      }
+      return res.json({ status: 200 })
+    }
+    return res.json({ error: 'Failed, authorization is incorrect.' })
+  } catch (err) {
+    return res.json({ error: err.message })
+  }
 })
 
 // Setup / health status for the dashboard
 action(function status_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   setupStatus.getSetupStatusAsync(req._config, function (err, status) {
     if (err) {
       return res.status(500).json({ error: err.message })
@@ -79,8 +176,141 @@ action(function status_api (req, res) { // eslint-disable-line camelcase
   })
 })
 
-// Saved project folders (per OS user, stored in app data directory)
+// Settings API
+action('get', function settings_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var allSettings = settings.getSettings()
+    delete allSettings.session_secret
+    res.json({
+      settings: allSettings,
+      auth: authService.getAuthConfig(),
+      telegram: telegram.getConfig(),
+      users: authService.listUsers(),
+      user: currentUser(req),
+      dataDir: projectsStore.getDataDir(),
+      dbPath: db.getDbPath()
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api', function settings_update_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var body = req.body || {}
+    if (body.settings) {
+      settings.updateSettings(body.settings)
+      runtime.reloadSettings()
+      if (req._config) {
+        settings.applyToOptions(req._config)
+      }
+    }
+    if (body.auth) {
+      authService.updateAuthConfig(body.auth)
+    }
+    if (body.telegram) {
+      telegram.updateConfig(body.telegram)
+    }
+    res.json({
+      status: 'ok',
+      settings: (function () {
+        var s = settings.getSettings()
+        delete s.session_secret
+        return s
+      })(),
+      auth: authService.getAuthConfig(),
+      telegram: telegram.getConfig()
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/telegram/test', function settings_telegram_test_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  telegram.sendTest(function (err) {
+    if (err) {
+      return res.status(500).json({ error: err.message })
+    }
+    res.json({ status: 'ok' })
+  })
+})
+
+action('post', 'settings_api/users', function settings_create_user_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var body = req.body || {}
+    var user = authService.createUser(body.username, body.password)
+    res.json({ user: user })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/password', function settings_password_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req) || !req.session.userId) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var body = req.body || {}
+    authService.changePassword(req.session.userId, body.currentPassword, body.newPassword)
+    res.json({ status: 'ok' })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/2fa/begin', function settings_2fa_begin_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req) || !req.session.userId) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  authService.beginTotpSetup(req.session.userId).then(function (data) {
+    res.json(data)
+  }).catch(function (err) {
+    res.status(400).json({ error: err.message })
+  })
+})
+
+action('post', 'settings_api/2fa/confirm', function settings_2fa_confirm_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req) || !req.session.userId) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var result = authService.confirmTotpSetup(req.session.userId, req.body && req.body.code)
+    res.json(result)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/2fa/disable', function settings_2fa_disable_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req) || !req.session.userId) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var body = req.body || {}
+    var result = authService.disableTotp(req.session.userId, body.password, body.code)
+    res.json(result)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Saved project folders
 action('get', function projects_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   try {
     projectsStore.ensureReady()
     res.json({
@@ -93,6 +323,9 @@ action('get', function projects_api (req, res) { // eslint-disable-line camelcas
 })
 
 action('post', 'projects_api/browse', function projects_browse_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   if (denyIfReadonly(req, res)) {
     return
   }
@@ -106,7 +339,14 @@ action('post', 'projects_api/browse', function projects_browse_api (req, res) { 
     }
 
     try {
-      var project = projectsStore.addProject(folder)
+      var extras = {}
+      if (req.body && req.body.servicePort) {
+        extras.servicePort = req.body.servicePort
+      }
+      if (req.body && req.body.serviceUrl) {
+        extras.serviceUrl = req.body.serviceUrl
+      }
+      var project = projectsStore.addProject(folder, extras)
       res.json({ project: project })
     } catch (addErr) {
       res.status(400).json({ error: addErr.message })
@@ -115,6 +355,9 @@ action('post', 'projects_api/browse', function projects_browse_api (req, res) { 
 })
 
 action('post', 'projects_api/add', function projects_add_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   if (denyIfReadonly(req, res)) {
     return
   }
@@ -125,7 +368,14 @@ action('post', 'projects_api/add', function projects_add_api (req, res) { // esl
   }
 
   try {
-    var project = projectsStore.addProject(folder)
+    var extras = {}
+    if (req.body && req.body.servicePort) {
+      extras.servicePort = req.body.servicePort
+    }
+    if (req.body && req.body.serviceUrl) {
+      extras.serviceUrl = req.body.serviceUrl
+    }
+    var project = projectsStore.addProject(folder, extras)
     res.json({ project: project })
   } catch (err) {
     res.status(400).json({ error: err.message })
@@ -133,6 +383,9 @@ action('post', 'projects_api/add', function projects_add_api (req, res) { // esl
 })
 
 action('delete', 'projects_api/:id', function projects_delete_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   if (denyIfReadonly(req, res)) {
     return
   }
@@ -146,6 +399,9 @@ action('delete', 'projects_api/:id', function projects_delete_api (req, res) { /
 })
 
 action('post', 'projects_api/:id/start', function projects_start_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   if (denyIfReadonly(req, res)) {
     return
   }
@@ -164,6 +420,9 @@ action('post', 'projects_api/:id/start', function projects_start_api (req, res) 
 })
 
 action('post', 'projects_api/start_all', function projects_start_all_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
   if (denyIfReadonly(req, res)) {
     return
   }

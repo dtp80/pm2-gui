@@ -8,6 +8,9 @@ bower_components/
 # Per-user saved project folders and config (package-local storage)
 .user-data/
 .pm2-gui-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 synology-start.sh
 
 # Demo GIF capture temp frames

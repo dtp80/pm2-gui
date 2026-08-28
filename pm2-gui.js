@@ -65,6 +65,9 @@ function startWebServer (confFile) {
     confFile: confFile
   })
   var options = monitor.options
+  try {
+    require('./lib/runtime').setMonitor(monitor)
+  } catch (err) {}
   // express server
   var server = Web({
     middleware: function (req, res, next) {
@@ -79,9 +82,15 @@ function startWebServer (confFile) {
       origin: options.origins || '*'
     }
   })
+  if (server.sessionMiddleware) {
+    monitor.sockio.engine.use(server.sessionMiddleware)
+  }
   monitor.run()
   console.info('Web server is listening on 127.0.0.1:' + options.port)
   console.info('User projects stored in:', projectsStore.getDataDir())
+  try {
+    console.info('SQLite database:', require('./lib/db').getDbPath())
+  } catch (err) {}
 
   projectsStore.autoStartAll({ pm2Home: options.pm2 }, function (err, results) {
     if (!results || results.length === 0) {
