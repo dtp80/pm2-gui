@@ -1220,8 +1220,11 @@
   }
 
   function loadSettings () {
-    fetch('/settings_api', { credentials: 'same-origin' })
-      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+    fetch('/settings_api', {
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(parseApiResponse)
       .then(function (result) {
         if (!result.ok) throw new Error(result.body.error || 'Could not load settings')
         fillSettingsForm(result.body)
@@ -1273,7 +1276,9 @@
 
     window.GUI.publicHost = s.public_host || ''
     window.GUI.publicProtocol = s.public_protocol || 'http'
-    state.startup = data.startup || null
+    if (data.startup) {
+      state.startup = data.startup
+    }
     renderStartupPanel(state.startup)
   }
 
@@ -1288,22 +1293,28 @@
       return
     }
 
-    if (startup.existingTask) {
+    if (metaEl) {
+      metaEl.innerHTML =
+        '<div class="startup-kv"><span>App dir</span><code>' + escapeHtml(startup.appDir || '') + '</code></div>' +
+        '<div class="startup-kv"><span>User home</span><code>' + escapeHtml(startup.userHome || '') + '</code></div>' +
+        '<div class="startup-kv"><span>User</span><code>' + escapeHtml(startup.owner || '') + '</code></div>' +
+        '<div class="startup-kv"><span>Command</span><code id="startup-command">' + escapeHtml(startup.command || '') + '</code></div>' +
+        '<div class="startup-kv"><span>Script</span><code>' + escapeHtml(startup.scriptPath || '') + '</code></div>'
+    }
+
+    setVal('setting-startup-app-dir', startup.appDir || '')
+    setVal('setting-startup-user-home', startup.userHome || '')
+
+    if (startup.warning) {
+      statusEl.textContent = startup.warning
+    } else if (startup.existingTask) {
       statusEl.textContent = 'Boot task already exists in Task Scheduler ("' + startup.taskName + '", id ' + startup.existingTask.id + ').'
     } else if (startup.bootEnabled) {
       statusEl.textContent = 'Boot start was configured earlier via ' + (startup.lastMethod || 'an automated method') + '.'
     } else if (startup.synology) {
       statusEl.textContent = 'Synology detected. You can try automatic creation, or follow the manual steps.'
     } else {
-      statusEl.textContent = 'Not running on Synology. A start script can still be generated; use crontab or a system service for boot.'
-    }
-
-    if (metaEl) {
-      metaEl.innerHTML =
-        '<div class="startup-kv"><span>App dir</span><code>' + escapeHtml(startup.appDir || '') + '</code></div>' +
-        '<div class="startup-kv"><span>User</span><code>' + escapeHtml(startup.owner || '') + '</code></div>' +
-        '<div class="startup-kv"><span>Command</span><code id="startup-command">' + escapeHtml(startup.command || '') + '</code></div>' +
-        '<div class="startup-kv"><span>Script</span><code>' + escapeHtml(startup.scriptPath || '') + '</code></div>'
+      statusEl.textContent = 'Not running on Synology. Set Synology paths below only if you will copy the script to the NAS; prefer generating it on the NAS.'
     }
 
     if (stepsEl && startup.instructions && Array.isArray(startup.instructions.steps)) {
@@ -1322,9 +1333,14 @@
     }
     fetch('/settings_api/startup', {
       method: 'POST',
-      credentials: 'same-origin'
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        appDir: getVal('setting-startup-app-dir').trim(),
+        userHome: getVal('setting-startup-user-home').trim()
+      })
     })
-      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(parseApiResponse)
       .then(function (result) {
         if (!result.ok) throw new Error(result.body.error || 'Could not create boot task')
         if (resultEl) {
@@ -1393,6 +1409,24 @@
     return !!(el && el.checked)
   }
 
+  function parseApiResponse (res) {
+    return res.text().then(function (text) {
+      var body = null
+      var raw = text || ''
+      try {
+        body = raw ? JSON.parse(raw) : {}
+      } catch (err) {
+        var snippet = raw.replace(/\s+/g, ' ').slice(0, 120)
+        throw new Error(
+          'Server returned non-JSON (HTTP ' + res.status + '). ' +
+          'Restart pm2-gui so the settings API is loaded. ' +
+          (snippet ? 'Got: ' + snippet : '')
+        )
+      }
+      return { ok: res.ok, status: res.status, body: body }
+    })
+  }
+
   function saveSettings () {
     var payload = {
       settings: {
@@ -1421,13 +1455,13 @@
       }
     }
 
-    fetch('/settings_api', {
+    fetch('/settings_api/save', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(payload)
     })
-      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+      .then(parseApiResponse)
       .then(function (result) {
         if (!result.ok) throw new Error(result.body.error || 'Could not save settings')
         fillSettingsForm(result.body)

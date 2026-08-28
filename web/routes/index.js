@@ -178,11 +178,11 @@ action(function status_api (req, res) { // eslint-disable-line camelcase
 })
 
 // Settings API
-action('get', function settings_api (req, res) { // eslint-disable-line camelcase
+action('get', 'settings_api', function settings_api_get (req, res) { // eslint-disable-line camelcase
   if (!authService.isAuthenticated(req)) {
     return res.status(401).json({ error: 'Authentication required' })
   }
-    try {
+  try {
     var allSettings = settings.getSettings()
     delete allSettings.session_secret
     synologyBoot.getStatus(function (bootErr, startup) {
@@ -202,7 +202,7 @@ action('get', function settings_api (req, res) { // eslint-disable-line camelcas
   }
 })
 
-action('post', 'settings_api', function settings_update_api (req, res) { // eslint-disable-line camelcase
+function handleSettingsUpdate (req, res) {
   if (!authService.isAuthenticated(req)) {
     return res.status(401).json({ error: 'Authentication required' })
   }
@@ -221,20 +221,27 @@ action('post', 'settings_api', function settings_update_api (req, res) { // esli
     if (body.telegram) {
       telegram.updateConfig(body.telegram)
     }
+    var saved = settings.getSettings()
+    delete saved.session_secret
     res.json({
       status: 'ok',
-      settings: (function () {
-        var s = settings.getSettings()
-        delete s.session_secret
-        return s
-      })(),
+      settings: saved,
       auth: authService.getAuthConfig(),
-      telegram: telegram.getConfig()
+      telegram: telegram.getConfig(),
+      users: authService.listUsers(),
+      user: currentUser(req),
+      dataDir: projectsStore.getDataDir(),
+      dbPath: db.getDbPath()
     })
   } catch (err) {
-    res.status(400).json({ error: err.message })
+    console.error('[settings] update failed:', err)
+    res.status(400).json({ error: err.message || 'Could not save settings' })
   }
-})
+}
+
+action('post', 'settings_api', handleSettingsUpdate)
+action('put', 'settings_api', handleSettingsUpdate)
+action('post', 'settings_api/save', handleSettingsUpdate)
 
 action('post', 'settings_api/telegram/test', function settings_telegram_test_api (req, res) { // eslint-disable-line camelcase
   if (!authService.isAuthenticated(req)) {
@@ -264,7 +271,12 @@ action('post', 'settings_api/startup', function settings_startup_post_api (req, 
   if (!authService.isAuthenticated(req)) {
     return res.status(401).json({ error: 'Authentication required' })
   }
-  synologyBoot.setupBootTask({ preferCrontab: true }, function (err, result) {
+  var body = req.body || {}
+  synologyBoot.setupBootTask({
+    preferCrontab: true,
+    appDir: body.appDir,
+    userHome: body.userHome
+  }, function (err, result) {
     if (err) {
       return res.status(500).json({ error: err.message })
     }

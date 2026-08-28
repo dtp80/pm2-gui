@@ -28,7 +28,8 @@ module.exports = function (options) {
   app.set('view engine', 'pug')
   app.set('views', path.join(__dirname, 'templates/views'))
   app.use(express.static(path.join(__dirname, 'public')))
-  app.use(express.json())
+  app.use(express.json({ limit: '2mb' }))
+  app.use(express.urlencoded({ extended: true }))
 
   var sessionMiddleware = session({
     name: 'pm2gui.sid',

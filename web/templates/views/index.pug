@@ -170,6 +170,11 @@ block content
           .tab-panel#settings-tab-startup
             h4 Start pm2-gui on boot
             p.add-project-hint#startup-status-text Detecting environment…
+            label.add-project-label(for='setting-startup-app-dir') App directory on Synology
+            input#setting-startup-app-dir.add-project-input(type='text', placeholder='/volume1/web/pm2-gui')
+            label.add-project-label(for='setting-startup-user-home') User home on Synology
+            input#setting-startup-user-home.add-project-input(type='text', placeholder='/var/services/homes/YOUR_USERNAME')
+            p.add-project-hint Saved to the local DB and .pm2-gui-boot.env (not committed). Leave blank to auto-detect from the Task Scheduler user. Use Synology paths only — never Mac /Users/... paths.
             .startup-meta#startup-meta
             .setup-actions
               button.btn.btn-primary#setting-startup-create(type='button') Create / update boot task
@@ -271,4 +276,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.4.1')
+  script(src='/js/app.js?v=0.4.3')
