@@ -228,8 +228,8 @@
       onConnect: function () {
         markPartiallyConnected('Connected to monitor')
       },
-      onVersion: function (version) {
-        markConnected('PM2 v' + version)
+      onVersion: function (info) {
+        applyPm2Version(info)
       },
       onSysStat: onSystemStats,
       onError: onSocketError
@@ -344,6 +344,26 @@
     clearConnectTimer()
     hideSetupModal()
     setConnectionStatus(label, 'ok')
+  }
+
+  function applyPm2Version (info) {
+    if (typeof info === 'string') {
+      markConnected('PM2 v' + info)
+      if (els.pm2Version) {
+        els.pm2Version.title = ''
+      }
+      return
+    }
+
+    var label = 'PM2 v' + (info.version || '0.0.0')
+    markConnected(label)
+
+    if (els.pm2Version && info.updateRecommended) {
+      els.pm2Version.title = 'Daemon is v' + info.daemon + '. Run: pm2 update'
+      els.pm2Version.dataset.state = 'pending'
+    } else if (els.pm2Version) {
+      els.pm2Version.title = ''
+    }
   }
 
   function setConnectionStatus (label, tone) {
