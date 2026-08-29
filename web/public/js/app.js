@@ -43,7 +43,9 @@
     startup: null,
     updating: false,
     confirmResolver: null,
-    promptResolver: null
+    promptResolver: null,
+    folderPickResolver: null,
+    folderPickBound: false
   }
 
   var els = {}
@@ -134,6 +136,12 @@
 
   function bindUI () {
     document.body.addEventListener('click', function (event) {
+      var dropzoneClick = event.target.closest('#folder-dropzone')
+      if (dropzoneClick) {
+        browseFolderFromPickModal()
+        return
+      }
+
       // Clicks on SVG/path inside icon buttons must resolve to the button
       var target = event.target.closest(
         'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete], [data-project-update], [data-process-update]'
@@ -187,6 +195,41 @@
 
       if (target.id === 'settings-save') {
         saveSettings()
+        return
+      }
+
+      if (target.id === 'setting-self-update' || target.id === 'self-update-btn') {
+        beginSelfUpdate()
+        return
+      }
+
+      if (target.id === 'setting-debug-view-log') {
+        openDebugLogModal()
+        return
+      }
+
+      if (target.id === 'debug-log-copy') {
+        copyDebugLog()
+        return
+      }
+
+      if (target.id === 'debug-log-refresh') {
+        openDebugLogModal()
+        return
+      }
+
+      if (target.dataset.close === 'folder-pick-cancel') {
+        resolveFolderPick(null)
+        return
+      }
+
+      if (target.id === 'folder-pick-browse') {
+        browseFolderFromPickModal()
+        return
+      }
+
+      if (target.dataset.close === 'debug-log') {
+        hideDebugLogModal()
         return
       }
 
@@ -367,6 +410,13 @@
         resolvePrompt(event.target.value)
       }
     })
+
+    var debugToggle = document.getElementById('setting-debug-enabled')
+    if (debugToggle) {
+      debugToggle.addEventListener('change', function () {
+        syncDebugLogButton(!!debugToggle.checked)
+      })
+    }
   }
 
   function connectAll (connectionValue) {
@@ -1004,12 +1054,12 @@
     state.sockets.sys.emit(EVENTS.PULL_ACTION, action, id)
   }
 
-  var UPDATE_EXCLUDE_RE = /^(node_modules|\.git|\.svn|\.hg|logs?|\.DS_Store|Thumbs\.db|\.next|\.nuxt|\.cache|coverage|\.turbo|\.vercel)$/i
+  var UPDATE_EXCLUDE_RE = /^(node_modules|\.git|\.svn|\.hg|logs?|\.DS_Store|Thumbs\.db|\.next|\.nuxt|\.cache|coverage|\.turbo|\.vercel|data|\.pm2-gui-boot\.env|pm2-gui\.log|pm2-gui\.pid)$/i
   var MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
   function isExcludedUpdatePath (relPath) {
     return String(relPath || '').replace(/\\/g, '/').split('/').some(function (part) {
-      return part && UPDATE_EXCLUDE_RE.test(part)
+      return part && (UPDATE_EXCLUDE_RE.test(part) || /\.sqlite$/i.test(part))
     })
   }
 
@@ -1023,7 +1073,7 @@
   }
 
   function supportsDirectoryPicker () {
-    return typeof window.showDirectoryPicker === 'function'
+    return !!(window.isSecureContext && typeof window.showDirectoryPicker === 'function')
   }
 
   function collectFilesFromDirHandle (dirHandle, prefix, out) {
@@ -1043,33 +1093,186 @@
     })()
   }
 
-  // Prefer File System Access API to avoid Chrome's "Upload N files to this site?" prompt.
+  // Prefer File System Access API when HTTPS (no Chrome "Upload N files?" dialog).
+  // On HTTP, use the app folder-pick modal with drag-and-drop (also avoids that dialog).
   function pickLocalProjectFolder () {
-    if (supportsDirectoryPicker()) {
-      return window.showDirectoryPicker({ mode: 'read' }).then(function (dirHandle) {
+    return showFolderPickModal({
+      title: 'Choose project folder',
+      message: 'Drop a folder below, or browse. node_modules and .git are skipped.'
+    })
+  }
+
+  function showFolderPickModal (options) {
+    options = options || {}
+    return new Promise(function (resolve) {
+      if (state.folderPickResolver) {
+        state.folderPickResolver(null)
+      }
+      state.folderPickResolver = resolve
+
+      var modal = document.getElementById('folder-pick-modal')
+      var title = document.getElementById('folder-pick-title')
+      var message = document.getElementById('folder-pick-message')
+      var status = document.getElementById('folder-dropzone-status')
+      if (title) title.textContent = options.title || 'Choose project folder'
+      if (message) message.textContent = options.message || ''
+      if (status) status.textContent = ''
+      bindFolderDropzoneOnce()
+      if (modal) modal.hidden = false
+    })
+  }
+
+  function resolveFolderPick (selection) {
+    var modal = document.getElementById('folder-pick-modal')
+    if (modal) modal.hidden = true
+    var status = document.getElementById('folder-dropzone-status')
+    if (status) status.textContent = ''
+    var dropzone = document.getElementById('folder-dropzone')
+    if (dropzone) dropzone.classList.remove('is-dragover')
+    var resolver = state.folderPickResolver
+    state.folderPickResolver = null
+    if (resolver) resolver(selection || null)
+  }
+
+  function setFolderPickStatus (text) {
+    var status = document.getElementById('folder-dropzone-status')
+    if (status) status.textContent = text || ''
+  }
+
+  function bindFolderDropzoneOnce () {
+    if (state.folderPickBound) return
+    var dropzone = document.getElementById('folder-dropzone')
+    if (!dropzone) return
+    state.folderPickBound = true
+
+    ;['dragenter', 'dragover'].forEach(function (evt) {
+      dropzone.addEventListener(evt, function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+        dropzone.classList.add('is-dragover')
+      })
+    })
+
+    ;['dragleave', 'drop'].forEach(function (evt) {
+      dropzone.addEventListener(evt, function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (evt === 'dragleave') dropzone.classList.remove('is-dragover')
+      })
+    })
+
+    dropzone.addEventListener('drop', function (event) {
+      dropzone.classList.remove('is-dragover')
+      handleFolderDrop(event).catch(function (err) {
+        toast(err.message || 'Could not read dropped folder', 'error')
+        setFolderPickStatus('')
+      })
+    })
+  }
+
+  function handleFolderDrop (event) {
+    var dt = event.dataTransfer
+    if (!dt) return Promise.reject(new Error('Nothing was dropped'))
+
+    var dirEntry = null
+    if (dt.items && dt.items.length) {
+      for (var i = 0; i < dt.items.length; i++) {
+        var item = dt.items[i]
+        if (!item || item.kind !== 'file') continue
+        var entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null
+        if (entry && entry.isDirectory) {
+          dirEntry = entry
+          break
+        }
+      }
+    }
+
+    if (!dirEntry) {
+      return Promise.reject(new Error('Drop a folder (not individual files)'))
+    }
+
+    setFolderPickStatus('Reading ' + dirEntry.name + '…')
+    var collected = []
+    return readDirectoryEntry(dirEntry, '', collected).then(function () {
+      var selection = prepareUploadSelection(collected, dirEntry.name)
+      setFolderPickStatus('Ready: ' + selection.files.length + ' files')
+      resolveFolderPick(selection)
+    })
+  }
+
+  function readDirectoryEntry (dirEntry, prefix, out) {
+    return new Promise(function (resolve, reject) {
+      var reader = dirEntry.createReader()
+      function readBatch () {
+        reader.readEntries(function (entries) {
+          if (!entries.length) {
+            resolve(out)
+            return
+          }
+          var chain = Promise.resolve()
+          entries.forEach(function (entry) {
+            chain = chain.then(function () {
+              if (!entry || UPDATE_EXCLUDE_RE.test(entry.name)) return null
+              var rel = prefix ? (prefix + '/' + entry.name) : entry.name
+              if (entry.isDirectory) {
+                return readDirectoryEntry(entry, rel, out)
+              }
+              return new Promise(function (fileResolve, fileReject) {
+                entry.file(function (file) {
+                  out.push({ file: file, relPath: rel })
+                  fileResolve()
+                }, fileReject)
+              })
+            })
+          })
+          chain.then(readBatch).catch(reject)
+        }, reject)
+      }
+      readBatch()
+    })
+  }
+
+  function browseFolderFromPickModal () {
+    setFolderPickStatus('Opening folder picker…')
+    var picker = supportsDirectoryPicker()
+      ? window.showDirectoryPicker({ mode: 'read' }).then(function (dirHandle) {
         var collected = []
         return collectFilesFromDirHandle(dirHandle, '', collected).then(function () {
           return prepareUploadSelection(collected.map(function (item) {
             return { file: item.file, relPath: item.relPath }
           }), dirHandle.name)
         })
-      }).catch(function (err) {
-        if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
-          return null
-        }
-        throw err
       })
-    }
+      : pickLocalProjectFolderViaInput()
 
-    return pickLocalProjectFolderViaInput()
+    Promise.resolve(picker).then(function (selection) {
+      if (!selection) {
+        setFolderPickStatus('')
+        return
+      }
+      resolveFolderPick(selection)
+    }).catch(function (err) {
+      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+        setFolderPickStatus('')
+        return
+      }
+      toast((err && err.message) || 'Could not read folder', 'error')
+      setFolderPickStatus('')
+    })
   }
 
   function pickLocalProjectFolderViaInput () {
     return new Promise(function (resolve) {
-      var input = document.getElementById('project-update-folder')
+      var input = document.getElementById('project-update-folder') ||
+        document.getElementById('project-create-folder')
       if (!input) {
-        resolve(null)
-        return
+        input = document.createElement('input')
+        input.type = 'file'
+        input.setAttribute('webkitdirectory', '')
+        input.setAttribute('directory', '')
+        input.multiple = true
+        input.style.display = 'none'
+        document.body.appendChild(input)
       }
       input.value = ''
       input.onchange = function () {
@@ -1117,10 +1320,23 @@
 
     return {
       folderName: folderName || 'project',
+      mode: 'files',
       files: uploadFiles,
       paths: paths,
       totalBytes: totalBytes
     }
+  }
+
+  function projectPickConfirmMessage (root, forUpdate) {
+    if (forUpdate) {
+      return 'Drag the updated project folder into the next dialog, or browse to select it.\n\n' +
+        'It will overwrite matching files on the NAS. node_modules and .git are skipped.'
+    }
+    return 'Drag the project folder into the next dialog, or browse to select it.\n\n' +
+      'It will be uploaded to:\n' + root + '/<folder-name>\n\n' +
+      'then registered and started with PM2.\n\n' +
+      'If that folder already exists, it will be overwritten.\n' +
+      'node_modules and .git are skipped.'
   }
 
   function beginProjectUpdate (opts) {
@@ -1139,26 +1355,21 @@
       if (project) pathHint = project.path
     }
 
-    var message = 'Stop the app (if running), overwrite files in:\n\n' +
-      (pathHint || 'the project folder on the NAS') +
-      '\n\nwith a folder from this computer, then start it again.\n\n' +
-      'Folders like node_modules and .git are skipped.'
+    var message = pathHint
+      ? ('Replace files in:\n' + pathHint + '\n\nDrop the folder from your laptop below, or browse.')
+      : 'Drop the updated project folder below, or browse. Matching files on the NAS will be overwritten.'
 
-    showConfirmModal({
+    showFolderPickModal({
       title: 'Update project from laptop',
-      message: message,
-      confirmLabel: 'Choose folder'
-    }).then(function (ok) {
-      if (!ok) return
-      return pickLocalProjectFolder().then(function (selection) {
-        if (!selection) return
-        uploadProjectUpdate({
-          projectId: opts.projectId || null,
-          pmId: opts.pmId != null ? opts.pmId : null,
-          button: opts.button || null,
-          pathHint: pathHint
-        }, selection.files, selection.paths, selection.totalBytes)
-      })
+      message: message
+    }).then(function (selection) {
+      if (!selection) return
+      uploadProjectUpdate({
+        projectId: opts.projectId || null,
+        pmId: opts.pmId != null ? opts.pmId : null,
+        button: opts.button || null,
+        pathHint: pathHint
+      }, selection)
     }).catch(function (err) {
       toast(err.message || 'Could not read folder', 'error')
     })
@@ -1197,7 +1408,7 @@
     if (detailEl && detail != null) detailEl.textContent = detail
   }
 
-  function uploadProjectUpdate (ctx, files, paths, totalBytes) {
+  function uploadProjectUpdate (ctx, selection) {
     var url
     if (ctx.projectId) {
       url = '/projects_api/' + encodeURIComponent(ctx.projectId) + '/update'
@@ -1209,15 +1420,25 @@
     }
 
     var form = new FormData()
-    form.append('paths', JSON.stringify(paths))
-    files.forEach(function (file) {
-      form.append('file', file, file.name)
-    })
+    var isZip = selection && (selection.mode === 'zip' || selection.archive)
+    var totalBytes = (selection && selection.totalBytes) || 0
+    var labelCount
+    if (isZip) {
+      var zipFile = selection.archive || selection.files[0]
+      form.append('archive', zipFile, zipFile.name || 'project.zip')
+      labelCount = '1 ZIP'
+    } else {
+      form.append('paths', JSON.stringify(selection.paths || []))
+      ;(selection.files || []).forEach(function (file) {
+        form.append('file', file, file.name)
+      })
+      labelCount = (selection.files || []).length + ' files'
+    }
 
     setProjectActionsLocked(true)
     showUpdateProgressModal(
       'Updating ' + (ctx.pathHint ? ctx.pathHint.split('/').pop() : 'project'),
-      'Uploading ' + files.length + ' files (' + formatBytes(totalBytes) + ')'
+      'Uploading ' + labelCount + ' (' + formatBytes(totalBytes) + ')'
     )
 
     var xhr = new XMLHttpRequest()
@@ -1305,30 +1526,30 @@
       return
     }
 
-    showConfirmModal({
+    showFolderPickModal({
       title: 'Add project from laptop',
-      message: 'Choose a folder on this computer.\n\nIt will be uploaded to:\n' + root + '/<folder-name>\n\nthen registered and started with PM2.\n\nFolders like node_modules and .git are skipped.',
-      confirmLabel: 'Choose folder'
-    }).then(function (ok) {
-      if (!ok) return
-      return pickLocalProjectFolder().then(function (selection) {
-        if (!selection) return
-        var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
-        return showPromptModal({
-          title: 'Service port (optional)',
-          message: 'Uploading to ' + targetHint + '\n\nEnter a service port for the open-in-browser link, or leave blank.',
-          inputType: 'number',
-          placeholder: 'e.g. 3000'
-        }).then(function (portValue) {
-          if (portValue === null) return
-          uploadCreateProject({
-            folderName: selection.folderName,
-            targetHint: targetHint,
-            servicePort: String(portValue || '').trim(),
-            files: selection.files,
-            paths: selection.paths,
-            totalBytes: selection.totalBytes
-          })
+      message: 'Uploads to ' + root + '/<folder-name>, then installs and starts with PM2.\n' +
+        'If that folder already exists, it will be overwritten.\n\n' +
+        'Drop the project folder below (recommended), or browse.'
+    }).then(function (selection) {
+      if (!selection) return
+      var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
+      return showPromptModal({
+        title: 'Service port (optional)',
+        message: 'Uploading to ' + targetHint + '\n\nEnter a service port for the open-in-browser link, or leave blank.',
+        inputType: 'number',
+        placeholder: 'e.g. 3000'
+      }).then(function (portValue) {
+        if (portValue === null) return
+        uploadCreateProject({
+          folderName: selection.folderName,
+          targetHint: targetHint,
+          servicePort: String(portValue || '').trim(),
+          mode: selection.mode,
+          archive: selection.archive || null,
+          files: selection.files,
+          paths: selection.paths,
+          totalBytes: selection.totalBytes
         })
       })
     }).catch(function (err) {
@@ -1347,20 +1568,30 @@
 
   function uploadCreateProject (ctx) {
     var form = new FormData()
-    form.append('paths', JSON.stringify(ctx.paths))
     form.append('folderName', ctx.folderName)
     form.append('start', '1')
     if (ctx.servicePort) {
       form.append('servicePort', ctx.servicePort)
     }
-    ctx.files.forEach(function (file) {
-      form.append('file', file, file.name)
-    })
+
+    var isZip = ctx.mode === 'zip' || ctx.archive
+    var uploadLabel
+    if (isZip) {
+      var zipFile = ctx.archive || ctx.files[0]
+      form.append('archive', zipFile, zipFile.name || (ctx.folderName + '.zip'))
+      uploadLabel = '1 ZIP (' + formatBytes(ctx.totalBytes) + ')'
+    } else {
+      form.append('paths', JSON.stringify(ctx.paths || []))
+      ;(ctx.files || []).forEach(function (file) {
+        form.append('file', file, file.name)
+      })
+      uploadLabel = (ctx.files || []).length + ' files (' + formatBytes(ctx.totalBytes) + ')'
+    }
 
     setProjectActionsLocked(true)
     showUpdateProgressModal(
       'Adding ' + ctx.folderName,
-      'Uploading ' + ctx.files.length + ' files (' + formatBytes(ctx.totalBytes) + ') → ' + ctx.targetHint
+      'Uploading ' + uploadLabel + ' → ' + ctx.targetHint
     )
 
     var xhr = new XMLHttpRequest()
@@ -1411,8 +1642,13 @@
         setProjectActionsLocked(false)
         hideUpdateProgressModal()
         var name = (body.project && body.project.name) || ctx.folderName
+        var overwritten = Array.isArray(body.steps) && body.steps.some(function (s) {
+          return s && s.step === 'overwrite'
+        })
         if (body.warning) {
           toast(body.warning, 'error')
+        } else if (overwritten) {
+          toast('Overwrote existing folder and started ' + name)
         } else {
           toast('Added and started ' + name)
         }
@@ -1703,6 +1939,9 @@
       if (state.confirmResolver) {
         state.confirmResolver(false)
       }
+      state.confirmRunOnConfirm = typeof options.runOnConfirm === 'function'
+        ? options.runOnConfirm
+        : null
       state.confirmResolver = resolve
 
       var modal = document.getElementById('confirm-modal')
@@ -1724,13 +1963,35 @@
     var modal = document.getElementById('confirm-modal')
     if (modal) modal.hidden = true
     var resolver = state.confirmResolver
+    var runOnConfirm = state.confirmRunOnConfirm
     state.confirmResolver = null
+    state.confirmRunOnConfirm = null
     var okBtn = document.getElementById('confirm-ok')
     if (okBtn) {
       okBtn.classList.remove('btn-confirm-danger')
       okBtn.classList.add('btn-primary')
     }
-    if (resolver) resolver(!!ok)
+    if (!resolver) return
+    if (!ok) {
+      resolver(false)
+      return
+    }
+    if (!runOnConfirm) {
+      resolver(true)
+      return
+    }
+    // Run picker synchronously inside the click stack so showDirectoryPicker keeps user activation.
+    try {
+      Promise.resolve(runOnConfirm()).then(function (result) {
+        resolver(result)
+      }, function (err) {
+        toast((err && err.message) || String(err), 'error')
+        resolver(false)
+      })
+    } catch (err) {
+      toast((err && err.message) || String(err), 'error')
+      resolver(false)
+    }
   }
 
   function showPromptModal (options) {
@@ -1838,6 +2099,8 @@
     setVal('setting-refresh', s.refresh || '5s')
     setVal('setting-process-refresh', s.process_refresh || '3s')
     setChecked('setting-readonly', !!s.readonly)
+    setChecked('setting-debug-enabled', !!s.debug_enabled)
+    syncDebugLogButton(!!s.debug_enabled)
 
     setChecked('setting-auth-enabled', !!a.enabled)
     setChecked('setting-require-2fa', !!a.require2fa)
@@ -2004,6 +2267,174 @@
     return !!(el && el.checked)
   }
 
+  function syncDebugLogButton (enabled) {
+    var btn = document.getElementById('setting-debug-view-log')
+    if (btn) btn.hidden = !enabled
+  }
+
+  function hideDebugLogModal () {
+    var modal = document.getElementById('debug-log-modal')
+    if (modal) modal.hidden = true
+  }
+
+  function openDebugLogModal () {
+    if (!getChecked('setting-debug-enabled')) {
+      toast('Enable Debug and Save settings first', 'error')
+      return
+    }
+    fetch('/settings_api/debug_log?lines=100', { credentials: 'same-origin' })
+      .then(parseApiResponse)
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error((result.body && result.body.error) || 'Could not load log')
+        }
+        var data = result.body || {}
+        var pathEl = document.getElementById('debug-log-path')
+        var textEl = document.getElementById('debug-log-text')
+        if (pathEl) {
+          pathEl.textContent = (data.path || 'no log file') +
+            ' · ' + (data.lineCount || 0) + ' lines'
+        }
+        if (textEl) textEl.textContent = data.text || ''
+        var modal = document.getElementById('debug-log-modal')
+        if (modal) modal.hidden = false
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+  }
+
+  function copyDebugLog () {
+    var textEl = document.getElementById('debug-log-text')
+    var text = textEl ? textEl.textContent : ''
+    if (!text) {
+      toast('Nothing to copy', 'error')
+      return
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        toast('Log copied')
+      }).catch(function () {
+        fallbackCopyText(text)
+      })
+      return
+    }
+    fallbackCopyText(text)
+  }
+
+  function fallbackCopyText (text) {
+    var ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    try {
+      document.execCommand('copy')
+      toast('Log copied')
+    } catch (err) {
+      toast('Could not copy', 'error')
+    }
+    document.body.removeChild(ta)
+  }
+
+  function beginSelfUpdate () {
+    if (window.GUI.readonly) {
+      toast('Server is in read-only mode', 'error')
+      return
+    }
+    if (state.updating) {
+      toast('Wait for the current upload to finish', 'error')
+      return
+    }
+
+    showFolderPickModal({
+      title: 'Update pm2-gui',
+      message: 'Drop the pm2-gui project folder below, or browse.\n\n' +
+        'Files are overwritten, npm install runs, then synology-start.sh restarts the dashboard.'
+    }).then(function (selection) {
+      if (!selection) return
+      uploadSelfUpdate(selection)
+    }).catch(function (err) {
+      toast(err.message || 'Could not read folder', 'error')
+    })
+  }
+
+  function uploadSelfUpdate (selection) {
+    var form = new FormData()
+    var isZip = selection && (selection.mode === 'zip' || selection.archive)
+    var totalBytes = (selection && selection.totalBytes) || 0
+    var labelCount
+    if (isZip) {
+      var zipFile = selection.archive || selection.files[0]
+      form.append('archive', zipFile, zipFile.name || 'pm2-gui.zip')
+      labelCount = '1 ZIP'
+    } else {
+      form.append('paths', JSON.stringify(selection.paths || []))
+      ;(selection.files || []).forEach(function (file) {
+        form.append('file', file, file.name)
+      })
+      labelCount = (selection.files || []).length + ' files'
+    }
+
+    setProjectActionsLocked(true)
+    showUpdateProgressModal(
+      'Updating pm2-gui',
+      'Uploading ' + labelCount + ' (' + formatBytes(totalBytes) + ')'
+    )
+
+    var xhr = new XMLHttpRequest()
+    xhr.open('POST', '/settings_api/self_update')
+    xhr.withCredentials = true
+
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable) {
+        setUpdateProgress(0, 'Uploading…')
+        return
+      }
+      var pct = (event.loaded / event.total) * 85
+      setUpdateProgress(pct, formatBytes(event.loaded) + ' / ' + formatBytes(event.total))
+    }
+
+    xhr.upload.onload = function () {
+      setUpdateProgress(90, 'Upload complete — installing and scheduling restart…')
+    }
+
+    xhr.onerror = function () {
+      setProjectActionsLocked(false)
+      hideUpdateProgressModal()
+      toast('Self-update failed (network error)', 'error')
+    }
+
+    xhr.onload = function () {
+      var body = null
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+      } catch (err) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast('Server returned non-JSON (HTTP ' + xhr.status + ')', 'error')
+        return
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast((body && body.error) || 'Self-update failed', 'error')
+        return
+      }
+
+      setUpdateProgress(100, 'Restarting dashboard…')
+      toast(body.message || 'pm2-gui updated — restarting…')
+      setTimeout(function () {
+        hideUpdateProgressModal()
+        window.location.reload()
+      }, 2500)
+    }
+
+    xhr.send(form)
+  }
+
   function parseApiResponse (res) {
     return res.text().then(function (text) {
       var body = null
@@ -2030,7 +2461,8 @@
         projects_root: getVal('setting-projects-root').trim(),
         refresh: getVal('setting-refresh').trim() || '5s',
         process_refresh: getVal('setting-process-refresh').trim() || '3s',
-        readonly: getChecked('setting-readonly')
+        readonly: getChecked('setting-readonly'),
+        debug_enabled: getChecked('setting-debug-enabled')
       },
       auth: {
         enabled: getChecked('setting-auth-enabled'),

@@ -263,6 +263,60 @@ action('post', 'settings_api', handleSettingsUpdate)
 action('put', 'settings_api', handleSettingsUpdate)
 action('post', 'settings_api/save', handleSettingsUpdate)
 
+action('get', 'settings_api/debug_log', function settings_debug_log_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  var all = settings.getSettings()
+  if (!all.debug_enabled) {
+    return res.status(403).json({ error: 'Enable Debug in Settings → General first' })
+  }
+  try {
+    var lines = Math.min(500, Math.max(1, parseInt(req.query.lines, 10) || 100))
+    res.json(projectUpdate.getDashboardLogTail(lines))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/self_update', function settings_self_update_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+
+  ensureUpdateTempDir()
+  updateUpload.any()(req, res, function (err) {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Upload failed' })
+    }
+
+    var files = req.files || []
+    var fields = req.body || {}
+    if (typeof fields.paths === 'string') {
+      try {
+        fields.paths = JSON.parse(fields.paths)
+      } catch (parseErr) {
+        fields.paths = [fields.paths]
+      }
+    }
+
+    projectUpdate.applySelfUpdate({
+      files: files,
+      fields: fields
+    }, function (updateErr, result) {
+      projectUpdate.cleanupFiles(files)
+      if (updateErr) {
+        console.error('[self-update] failed:', updateErr.message)
+        return res.status(500).json({ error: updateErr.message })
+      }
+      res.json(result)
+    })
+  })
+})
+
 action('post', 'settings_api/telegram/test', function settings_telegram_test_api (req, res) { // eslint-disable-line camelcase
   if (!authService.isAuthenticated(req)) {
     return res.status(401).json({ error: 'Authentication required' })
