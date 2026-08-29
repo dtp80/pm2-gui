@@ -3,12 +3,31 @@ var Monitor = require('../../lib/monitor')
 var setupStatus = require('../../lib/setup-status')
 var folderPicker = require('../../lib/folder-picker')
 var projectsStore = require('../../lib/projects-store')
+var projectUpdate = require('../../lib/project-update')
 var settings = require('../../lib/settings')
 var authService = require('../../lib/auth-service')
 var telegram = require('../../lib/telegram')
 var runtime = require('../../lib/runtime')
 var db = require('../../lib/db')
 var synologyBoot = require('../../lib/synology-boot')
+var multer = require('multer')
+var os = require('os')
+var path = require('path')
+
+var updateUpload = multer({
+  dest: path.join(os.tmpdir(), 'pm2-gui-updates'),
+  limits: {
+    fileSize: projectUpdate.MAX_TOTAL_BYTES,
+    files: 5000,
+    fieldSize: 2 * 1024 * 1024
+  }
+})
+
+function ensureUpdateTempDir () {
+  try {
+    require('fs').mkdirSync(path.join(os.tmpdir(), 'pm2-gui-updates'), { recursive: true })
+  } catch (err) {}
+}
 
 function denyIfReadonly (req, res) {
   if (req._config && req._config.readonly) {
@@ -23,7 +42,8 @@ function publicWebConfig (req) {
   var fromIni = (req._config && req._config.web) || {}
   return {
     public_host: fromDb.publicHost || fromIni.public_host || '',
-    public_protocol: fromDb.publicProtocol || fromIni.public_protocol || 'http'
+    public_protocol: fromDb.publicProtocol || fromIni.public_protocol || 'http',
+    projects_root: fromDb.projectsRoot || fromIni.projects_root || ''
   }
 }
 
@@ -472,5 +492,101 @@ action('post', 'projects_api/start_all', function projects_start_all_api (req, r
       return res.status(500).json({ error: err.message })
     }
     res.json({ results: results, partialError: err ? err.message : null })
+  })
+})
+
+function handleProjectUpdateUpload (req, res, target) {
+  ensureUpdateTempDir()
+  updateUpload.any()(req, res, function (err) {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Upload failed' })
+    }
+
+    var files = req.files || []
+    var fields = req.body || {}
+    if (typeof fields.paths === 'string') {
+      try {
+        fields.paths = JSON.parse(fields.paths)
+      } catch (parseErr) {
+        fields.paths = [fields.paths]
+      }
+    }
+
+    var opts = {
+      pm2Home: req._config && req._config.pm2,
+      files: files,
+      fields: fields
+    }
+    if (target.projectId) opts.projectId = target.projectId
+    if (target.pmId != null) opts.pmId = target.pmId
+
+    projectUpdate.applyUpdate(opts, function (updateErr, result) {
+      projectUpdate.cleanupFiles(files)
+      if (updateErr) {
+        return res.status(500).json({ error: updateErr.message })
+      }
+      res.json(result)
+    })
+  })
+}
+
+action('post', 'projects_api/:id/update', function projects_update_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+  if (!projectsStore.findProject(req.params.id)) {
+    return res.status(404).json({ error: 'Project not found' })
+  }
+  handleProjectUpdateUpload(req, res, { projectId: req.params.id })
+})
+
+action('post', 'processes_api/:pmId/update', function processes_update_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+  handleProjectUpdateUpload(req, res, { pmId: req.params.pmId })
+})
+
+action('post', 'projects_api/create_from_upload', function projects_create_from_upload_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+
+  ensureUpdateTempDir()
+  updateUpload.any()(req, res, function (err) {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Upload failed' })
+    }
+
+    var files = req.files || []
+    var fields = req.body || {}
+    if (typeof fields.paths === 'string') {
+      try {
+        fields.paths = JSON.parse(fields.paths)
+      } catch (parseErr) {
+        fields.paths = [fields.paths]
+      }
+    }
+
+    projectUpdate.createFromUpload({
+      pm2Home: req._config && req._config.pm2,
+      files: files,
+      fields: fields
+    }, function (createErr, result) {
+      projectUpdate.cleanupFiles(files)
+      if (createErr) {
+        return res.status(500).json({ error: createErr.message })
+      }
+      res.json(result)
+    })
   })
 })

@@ -40,7 +40,10 @@
     savedProjects: [],
     projectsLoading: false,
     browsingFolder: false,
-    startup: null
+    startup: null,
+    updating: false,
+    confirmResolver: null,
+    promptResolver: null
   }
 
   var els = {}
@@ -133,7 +136,7 @@
     document.body.addEventListener('click', function (event) {
       // Clicks on SVG/path inside icon buttons must resolve to the button
       var target = event.target.closest(
-        'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete]'
+        'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete], [data-project-update], [data-process-update]'
       ) || event.target
 
       if (target.dataset.close === 'setup') {
@@ -148,6 +151,27 @@
 
       if (target.dataset.close === 'settings') {
         hideSettingsModal()
+        return
+      }
+
+      if (target.dataset.close === 'confirm-cancel') {
+        resolveConfirm(false)
+        return
+      }
+
+      if (target.dataset.close === 'prompt-cancel') {
+        resolvePrompt(null)
+        return
+      }
+
+      if (target.id === 'confirm-ok') {
+        resolveConfirm(true)
+        return
+      }
+
+      if (target.id === 'prompt-ok') {
+        var promptInput = document.getElementById('prompt-input')
+        resolvePrompt(promptInput ? promptInput.value : '')
         return
       }
 
@@ -232,7 +256,7 @@
       }
 
       if (target.id === 'add-project-btn') {
-        showAddProjectModal()
+        beginCreateProjectFromLaptop()
         return
       }
 
@@ -252,11 +276,19 @@
       }
 
       if (target.dataset.projectStart) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
         startSavedProject(target.dataset.projectStart, target)
         return
       }
 
       if (target.dataset.projectRemove) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
         removeSavedProject(target.dataset.projectRemove, target)
         return
       }
@@ -266,13 +298,55 @@
         return
       }
 
-      if (target.dataset.action && !window.GUI.readonly) {
-        var id = target.dataset.id
-        var action = target.dataset.action
-        if (action === 'delete' && id !== 'all' && !confirm('Delete this process and remove it from saved projects?')) {
+      if (target.dataset.projectUpdate) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
           return
         }
-        if (action === 'delete' && id === 'all' && !confirm('Delete ALL processes?')) {
+        beginProjectUpdate({ projectId: target.dataset.projectUpdate, button: target })
+        return
+      }
+
+      if (target.dataset.processUpdate) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
+        beginProjectUpdate({
+          pmId: target.dataset.processUpdate,
+          pathHint: target.dataset.updatePath || '',
+          button: target
+        })
+        return
+      }
+
+      if (target.dataset.action && !window.GUI.readonly) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
+        var id = target.dataset.id
+        var action = target.dataset.action
+        if (action === 'delete' && id !== 'all') {
+          showConfirmModal({
+            title: 'Delete process',
+            message: 'Delete this process and remove it from saved projects?',
+            confirmLabel: 'Delete',
+            danger: true
+          }).then(function (ok) {
+            if (ok) runAction(action, id, target)
+          })
+          return
+        }
+        if (action === 'delete' && id === 'all') {
+          showConfirmModal({
+            title: 'Delete all processes',
+            message: 'Delete ALL processes from PM2?',
+            confirmLabel: 'Delete all',
+            danger: true
+          }).then(function (ok) {
+            if (ok) runAction(action, id, target)
+          })
           return
         }
         runAction(action, id, target)
@@ -282,6 +356,15 @@
       var row = event.target.closest('[data-pmid]')
       if (row && row.dataset.pmid !== undefined && !event.target.closest('a, button')) {
         openProcessModal(parseInt(row.dataset.pmid, 10))
+      }
+    })
+
+    document.body.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter') return
+      var promptModal = document.getElementById('prompt-modal')
+      if (promptModal && !promptModal.hidden && event.target && event.target.id === 'prompt-input') {
+        event.preventDefault()
+        resolvePrompt(event.target.value)
       }
     })
   }
@@ -701,10 +784,18 @@
   }
 
   function deleteSavedProjectRow (projectId, button) {
-    if (!confirm('Remove this saved project from your list?')) {
+    if (state.updating) {
+      toast('Wait for the project update to finish', 'error')
       return
     }
-    removeSavedProject(projectId, button)
+    showConfirmModal({
+      title: 'Remove saved project',
+      message: 'Remove this saved project from your list?',
+      confirmLabel: 'Remove',
+      danger: true
+    }).then(function (ok) {
+      if (ok) removeSavedProject(projectId, button)
+    })
   }
 
   function onSocketError (err) {
@@ -784,6 +875,7 @@
       : (project.script || 'index.js')
     var actions = window.GUI.readonly ? '' : (
       '<td class="row-actions">' +
+        '<button class="btn btn-icon" data-project-update="' + project.id + '" title="Update from laptop" aria-label="Update from laptop">⬆</button>' +
         '<button class="btn btn-icon" data-project-start="' + project.id + '" title="start">▶</button>' +
         '<button class="btn btn-icon" data-project-delete="' + project.id + '" title="delete">✕</button>' +
       '</td>'
@@ -817,14 +909,19 @@
 
   function renderProcessActions (status, proc, project) {
     var html = ''
+    var updatePath = escapeAttr((project && project.path) || (proc.pm2_env && proc.pm2_env.pm_cwd) || '')
+    var updateBtn = updatePath
+      ? '<button class="btn btn-icon" data-process-update="' + proc.pm_id + '" data-update-path="' + updatePath + '" title="Update from laptop" aria-label="Update from laptop">⬆</button>'
+      : ''
+
     if (status === 'online') {
       var serviceUrl = resolveServiceUrl(proc, project)
       if (serviceUrl) {
         html += openServiceLink(serviceUrl)
       }
-      html += actionButton('restart', proc.pm_id) + actionButton('stop', proc.pm_id) + actionButton('delete', proc.pm_id)
+      html += updateBtn + actionButton('restart', proc.pm_id) + actionButton('stop', proc.pm_id) + actionButton('delete', proc.pm_id)
     } else {
-      html += actionButton('start', proc.pm_id) + actionButton('delete', proc.pm_id)
+      html += updateBtn + actionButton('start', proc.pm_id) + actionButton('delete', proc.pm_id)
     }
     return html
   }
@@ -905,6 +1002,428 @@
       setTimeout(function () { button.disabled = false }, 1200)
     }
     state.sockets.sys.emit(EVENTS.PULL_ACTION, action, id)
+  }
+
+  var UPDATE_EXCLUDE_RE = /^(node_modules|\.git|\.svn|\.hg|logs?|\.DS_Store|Thumbs\.db|\.next|\.nuxt|\.cache|coverage|\.turbo|\.vercel)$/i
+  var MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+  function isExcludedUpdatePath (relPath) {
+    return String(relPath || '').replace(/\\/g, '/').split('/').some(function (part) {
+      return part && UPDATE_EXCLUDE_RE.test(part)
+    })
+  }
+
+  function relativeUpdatePath (file) {
+    var rel = (file.webkitRelativePath || file.name || '').replace(/\\/g, '/')
+    var parts = rel.split('/').filter(Boolean)
+    if (parts.length > 1) {
+      parts.shift()
+    }
+    return parts.join('/')
+  }
+
+  function supportsDirectoryPicker () {
+    return typeof window.showDirectoryPicker === 'function'
+  }
+
+  function collectFilesFromDirHandle (dirHandle, prefix, out) {
+    return (async function walk () {
+      for await (var entry of dirHandle.values()) {
+        var name = entry.name
+        if (UPDATE_EXCLUDE_RE.test(name)) continue
+        var rel = prefix ? (prefix + '/' + name) : name
+        if (entry.kind === 'directory') {
+          await collectFilesFromDirHandle(entry, rel, out)
+        } else if (entry.kind === 'file') {
+          var file = await entry.getFile()
+          out.push({ file: file, relPath: rel })
+        }
+      }
+      return out
+    })()
+  }
+
+  // Prefer File System Access API to avoid Chrome's "Upload N files to this site?" prompt.
+  function pickLocalProjectFolder () {
+    if (supportsDirectoryPicker()) {
+      return window.showDirectoryPicker({ mode: 'read' }).then(function (dirHandle) {
+        var collected = []
+        return collectFilesFromDirHandle(dirHandle, '', collected).then(function () {
+          return prepareUploadSelection(collected.map(function (item) {
+            return { file: item.file, relPath: item.relPath }
+          }), dirHandle.name)
+        })
+      }).catch(function (err) {
+        if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+          return null
+        }
+        throw err
+      })
+    }
+
+    return pickLocalProjectFolderViaInput()
+  }
+
+  function pickLocalProjectFolderViaInput () {
+    return new Promise(function (resolve) {
+      var input = document.getElementById('project-update-folder')
+      if (!input) {
+        resolve(null)
+        return
+      }
+      input.value = ''
+      input.onchange = function () {
+        var files = Array.prototype.slice.call(input.files || [])
+        input.onchange = null
+        input.value = ''
+        if (!files.length) {
+          resolve(null)
+          return
+        }
+        var folderName = folderNameFromFiles(files)
+        var collected = files.map(function (file) {
+          return { file: file, relPath: relativeUpdatePath(file) }
+        })
+        try {
+          resolve(prepareUploadSelection(collected, folderName))
+        } catch (err) {
+          toast(err.message, 'error')
+          resolve(null)
+        }
+      }
+      input.click()
+    })
+  }
+
+  function prepareUploadSelection (collected, folderName) {
+    var paths = []
+    var uploadFiles = []
+    var totalBytes = 0
+
+    collected.forEach(function (item) {
+      var rel = item.relPath
+      if (!rel || isExcludedUpdatePath(rel)) return
+      totalBytes += (item.file && item.file.size) || 0
+      if (totalBytes > MAX_UPLOAD_BYTES) {
+        throw new Error('Folder is larger than 200 MB after exclusions')
+      }
+      paths.push(rel)
+      uploadFiles.push(item.file)
+    })
+
+    if (!uploadFiles.length) {
+      throw new Error('No uploadable files found in that folder (after exclusions)')
+    }
+
+    return {
+      folderName: folderName || 'project',
+      files: uploadFiles,
+      paths: paths,
+      totalBytes: totalBytes
+    }
+  }
+
+  function beginProjectUpdate (opts) {
+    if (window.GUI.readonly) {
+      toast('Server is in read-only mode', 'error')
+      return
+    }
+    if (state.updating) {
+      toast('An update is already in progress', 'error')
+      return
+    }
+
+    var pathHint = opts.pathHint || ''
+    if (opts.projectId) {
+      var project = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
+      if (project) pathHint = project.path
+    }
+
+    var message = 'Stop the app (if running), overwrite files in:\n\n' +
+      (pathHint || 'the project folder on the NAS') +
+      '\n\nwith a folder from this computer, then start it again.\n\n' +
+      'Folders like node_modules and .git are skipped.'
+
+    showConfirmModal({
+      title: 'Update project from laptop',
+      message: message,
+      confirmLabel: 'Choose folder'
+    }).then(function (ok) {
+      if (!ok) return
+      return pickLocalProjectFolder().then(function (selection) {
+        if (!selection) return
+        uploadProjectUpdate({
+          projectId: opts.projectId || null,
+          pmId: opts.pmId != null ? opts.pmId : null,
+          button: opts.button || null,
+          pathHint: pathHint
+        }, selection.files, selection.paths, selection.totalBytes)
+      })
+    }).catch(function (err) {
+      toast(err.message || 'Could not read folder', 'error')
+    })
+  }
+
+  function setProjectActionsLocked (locked) {
+    state.updating = !!locked
+    var app = document.getElementById('app')
+    if (app) {
+      app.classList.toggle('is-updating', !!locked)
+    }
+  }
+
+  function showUpdateProgressModal (title, subtitle) {
+    var modal = document.getElementById('update-progress-modal')
+    var titleEl = document.getElementById('update-progress-title')
+    var subEl = document.getElementById('update-progress-subtitle')
+    if (titleEl) titleEl.textContent = title || 'Updating project'
+    if (subEl) subEl.textContent = subtitle || ''
+    setUpdateProgress(0, 'Starting…')
+    if (modal) modal.hidden = false
+  }
+
+  function hideUpdateProgressModal () {
+    var modal = document.getElementById('update-progress-modal')
+    if (modal) modal.hidden = true
+  }
+
+  function setUpdateProgress (percent, detail) {
+    var fill = document.getElementById('update-progress-fill')
+    var pct = document.getElementById('update-progress-percent')
+    var detailEl = document.getElementById('update-progress-detail')
+    var value = Math.max(0, Math.min(100, Math.round(percent || 0)))
+    if (fill) fill.style.width = value + '%'
+    if (pct) pct.textContent = value + '%'
+    if (detailEl && detail != null) detailEl.textContent = detail
+  }
+
+  function uploadProjectUpdate (ctx, files, paths, totalBytes) {
+    var url
+    if (ctx.projectId) {
+      url = '/projects_api/' + encodeURIComponent(ctx.projectId) + '/update'
+    } else if (ctx.pmId != null) {
+      url = '/processes_api/' + encodeURIComponent(ctx.pmId) + '/update'
+    } else {
+      toast('Missing project or process id', 'error')
+      return
+    }
+
+    var form = new FormData()
+    form.append('paths', JSON.stringify(paths))
+    files.forEach(function (file) {
+      form.append('file', file, file.name)
+    })
+
+    setProjectActionsLocked(true)
+    showUpdateProgressModal(
+      'Updating ' + (ctx.pathHint ? ctx.pathHint.split('/').pop() : 'project'),
+      'Uploading ' + files.length + ' files (' + formatBytes(totalBytes) + ')'
+    )
+
+    var xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.withCredentials = true
+
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable) {
+        setUpdateProgress(0, 'Uploading…')
+        return
+      }
+      var pct = (event.loaded / event.total) * 90
+      setUpdateProgress(pct, formatBytes(event.loaded) + ' / ' + formatBytes(event.total))
+    }
+
+    xhr.upload.onload = function () {
+      setUpdateProgress(92, 'Upload complete — running install, then starting…')
+      var subEl = document.getElementById('update-progress-subtitle')
+      if (subEl) subEl.textContent = 'Applying update on the server (pnpm/npm install)…'
+    }
+
+    xhr.onerror = function () {
+      setProjectActionsLocked(false)
+      hideUpdateProgressModal()
+      toast('Upload failed (network error)', 'error')
+    }
+
+    xhr.onload = function () {
+      var body = null
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+      } catch (err) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast('Server returned non-JSON (HTTP ' + xhr.status + '). Restart pm2-gui if you just deployed.', 'error')
+        return
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast((body && body.error) || 'Update failed', 'error')
+        return
+      }
+
+      setUpdateProgress(100, 'Done')
+      var written = 0
+      ;(body.steps || []).forEach(function (step) {
+        if (step.step === 'merge') written = step.filesWritten || 0
+      })
+
+      setTimeout(function () {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast('Updated ' + written + ' file(s) and restarted ' + (ctx.pathHint || 'app'))
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+        loadSavedProjects()
+      }, 400)
+    }
+
+    xhr.send(form)
+  }
+
+  function getProjectsRoot () {
+    return (window.GUI.projectsRoot || '').trim()
+  }
+
+  function beginCreateProjectFromLaptop () {
+    if (window.GUI.readonly) {
+      toast('Server is in read-only mode', 'error')
+      return
+    }
+    if (state.updating) {
+      toast('Wait for the current upload to finish', 'error')
+      return
+    }
+
+    var root = getProjectsRoot()
+    if (!root) {
+      toast('Set Default projects path in Settings → General first', 'error')
+      showSettingsModal()
+      switchSettingsTab('general')
+      return
+    }
+
+    showConfirmModal({
+      title: 'Add project from laptop',
+      message: 'Choose a folder on this computer.\n\nIt will be uploaded to:\n' + root + '/<folder-name>\n\nthen registered and started with PM2.\n\nFolders like node_modules and .git are skipped.',
+      confirmLabel: 'Choose folder'
+    }).then(function (ok) {
+      if (!ok) return
+      return pickLocalProjectFolder().then(function (selection) {
+        if (!selection) return
+        var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
+        return showPromptModal({
+          title: 'Service port (optional)',
+          message: 'Uploading to ' + targetHint + '\n\nEnter a service port for the open-in-browser link, or leave blank.',
+          inputType: 'number',
+          placeholder: 'e.g. 3000'
+        }).then(function (portValue) {
+          if (portValue === null) return
+          uploadCreateProject({
+            folderName: selection.folderName,
+            targetHint: targetHint,
+            servicePort: String(portValue || '').trim(),
+            files: selection.files,
+            paths: selection.paths,
+            totalBytes: selection.totalBytes
+          })
+        })
+      })
+    }).catch(function (err) {
+      toast(err.message || 'Could not read folder', 'error')
+    })
+  }
+
+  function folderNameFromFiles (files) {
+    for (var i = 0; i < files.length; i++) {
+      var rel = (files[i].webkitRelativePath || files[i].name || '').replace(/\\/g, '/')
+      var parts = rel.split('/').filter(Boolean)
+      if (parts.length) return parts[0]
+    }
+    return ''
+  }
+
+  function uploadCreateProject (ctx) {
+    var form = new FormData()
+    form.append('paths', JSON.stringify(ctx.paths))
+    form.append('folderName', ctx.folderName)
+    form.append('start', '1')
+    if (ctx.servicePort) {
+      form.append('servicePort', ctx.servicePort)
+    }
+    ctx.files.forEach(function (file) {
+      form.append('file', file, file.name)
+    })
+
+    setProjectActionsLocked(true)
+    showUpdateProgressModal(
+      'Adding ' + ctx.folderName,
+      'Uploading ' + ctx.files.length + ' files (' + formatBytes(ctx.totalBytes) + ') → ' + ctx.targetHint
+    )
+
+    var xhr = new XMLHttpRequest()
+    xhr.open('POST', '/projects_api/create_from_upload')
+    xhr.withCredentials = true
+
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable) {
+        setUpdateProgress(0, 'Uploading…')
+        return
+      }
+      var pct = (event.loaded / event.total) * 90
+      setUpdateProgress(pct, formatBytes(event.loaded) + ' / ' + formatBytes(event.total))
+    }
+
+    xhr.upload.onload = function () {
+      setUpdateProgress(92, 'Upload complete — installing dependencies, then starting…')
+      var subEl = document.getElementById('update-progress-subtitle')
+      if (subEl) subEl.textContent = 'Running pnpm/npm install and registering the project…'
+    }
+
+    xhr.onerror = function () {
+      setProjectActionsLocked(false)
+      hideUpdateProgressModal()
+      toast('Upload failed (network error)', 'error')
+    }
+
+    xhr.onload = function () {
+      var body = null
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+      } catch (err) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast('Server returned non-JSON (HTTP ' + xhr.status + '). Restart pm2-gui if you just deployed.', 'error')
+        return
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast((body && body.error) || 'Could not create project', 'error')
+        return
+      }
+
+      setUpdateProgress(100, 'Done')
+      setTimeout(function () {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        var name = (body.project && body.project.name) || ctx.folderName
+        if (body.warning) {
+          toast(body.warning, 'error')
+        } else {
+          toast('Added and started ' + name)
+        }
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+        loadSavedProjects()
+      }, 400)
+    }
+
+    xhr.send(form)
   }
 
   function loadSetupStatus () {
@@ -1178,6 +1697,77 @@
     setTimeout(function () { node.remove() }, 5000)
   }
 
+  function showConfirmModal (options) {
+    options = options || {}
+    return new Promise(function (resolve) {
+      if (state.confirmResolver) {
+        state.confirmResolver(false)
+      }
+      state.confirmResolver = resolve
+
+      var modal = document.getElementById('confirm-modal')
+      var title = document.getElementById('confirm-title')
+      var message = document.getElementById('confirm-message')
+      var okBtn = document.getElementById('confirm-ok')
+      if (title) title.textContent = options.title || 'Confirm'
+      if (message) message.textContent = options.message || ''
+      if (okBtn) {
+        okBtn.textContent = options.confirmLabel || 'Confirm'
+        okBtn.classList.toggle('btn-confirm-danger', !!options.danger)
+        okBtn.classList.toggle('btn-primary', !options.danger)
+      }
+      if (modal) modal.hidden = false
+    })
+  }
+
+  function resolveConfirm (ok) {
+    var modal = document.getElementById('confirm-modal')
+    if (modal) modal.hidden = true
+    var resolver = state.confirmResolver
+    state.confirmResolver = null
+    var okBtn = document.getElementById('confirm-ok')
+    if (okBtn) {
+      okBtn.classList.remove('btn-confirm-danger')
+      okBtn.classList.add('btn-primary')
+    }
+    if (resolver) resolver(!!ok)
+  }
+
+  function showPromptModal (options) {
+    options = options || {}
+    return new Promise(function (resolve) {
+      if (state.promptResolver) {
+        state.promptResolver(null)
+      }
+      state.promptResolver = resolve
+
+      var modal = document.getElementById('prompt-modal')
+      var title = document.getElementById('prompt-title')
+      var message = document.getElementById('prompt-message')
+      var input = document.getElementById('prompt-input')
+      if (title) title.textContent = options.title || 'Input required'
+      if (message) message.textContent = options.message || ''
+      if (input) {
+        input.type = options.inputType || 'text'
+        input.placeholder = options.placeholder || ''
+        input.value = options.value || ''
+        input.autocomplete = options.autocomplete || 'off'
+      }
+      if (modal) modal.hidden = false
+      setTimeout(function () {
+        if (input) input.focus()
+      }, 50)
+    })
+  }
+
+  function resolvePrompt (value) {
+    var modal = document.getElementById('prompt-modal')
+    if (modal) modal.hidden = true
+    var resolver = state.promptResolver
+    state.promptResolver = null
+    if (resolver) resolver(value)
+  }
+
   function formatBytes (bytes) {
     bytes = Number(bytes) || 0
     if (bytes < 1024) return bytes + ' B'
@@ -1244,6 +1834,7 @@
 
     setVal('setting-public-host', s.public_host || '')
     setVal('setting-public-protocol', s.public_protocol || 'http')
+    setVal('setting-projects-root', s.projects_root || '')
     setVal('setting-refresh', s.refresh || '5s')
     setVal('setting-process-refresh', s.process_refresh || '3s')
     setChecked('setting-readonly', !!s.readonly)
@@ -1279,6 +1870,7 @@
 
     window.GUI.publicHost = s.public_host || ''
     window.GUI.publicProtocol = s.public_protocol || 'http'
+    window.GUI.projectsRoot = s.projects_root || ''
     if (data.startup) {
       state.startup = data.startup
     }
@@ -1435,6 +2027,7 @@
       settings: {
         public_host: getVal('setting-public-host').trim(),
         public_protocol: getVal('setting-public-protocol'),
+        projects_root: getVal('setting-projects-root').trim(),
         refresh: getVal('setting-refresh').trim() || '5s',
         process_refresh: getVal('setting-process-refresh').trim() || '3s',
         readonly: getChecked('setting-readonly')
@@ -1579,25 +2172,38 @@
   }
 
   function disable2fa () {
-    var password = window.prompt('Enter your password to disable 2FA')
-    if (password == null) return
-    var code = window.prompt('Enter a current 2FA code')
-    if (code == null) return
-    fetch('/settings_api/2fa/disable', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: password, code: code })
+    showPromptModal({
+      title: 'Disable 2FA',
+      message: 'Enter your password to disable two-factor authentication.',
+      inputType: 'password',
+      placeholder: 'Password',
+      autocomplete: 'current-password'
+    }).then(function (password) {
+      if (password == null || password === '') return
+      return showPromptModal({
+        title: 'Disable 2FA',
+        message: 'Enter a current authenticator code.',
+        inputType: 'text',
+        placeholder: '6-digit code',
+        autocomplete: 'one-time-code'
+      }).then(function (code) {
+        if (code == null || code === '') return
+        return fetch('/settings_api/2fa/disable', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: password, code: code })
+        })
+          .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
+          .then(function (result) {
+            if (!result.ok) throw new Error(result.body.error || 'Could not disable 2FA')
+            toast('2FA disabled')
+            loadSettings()
+          })
+      })
+    }).catch(function (err) {
+      toast(err.message, 'error')
     })
-      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body } }) })
-      .then(function (result) {
-        if (!result.ok) throw new Error(result.body.error || 'Could not disable 2FA')
-        toast('2FA disabled')
-        loadSettings()
-      })
-      .catch(function (err) {
-        toast(err.message, 'error')
-      })
   }
 
   function logout () {

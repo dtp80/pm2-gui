@@ -6,7 +6,7 @@
 # If Task Scheduler runs this as root, only root (or sudo) can stop it.
 # Prefer Task Scheduler user = your DSM user (e.g. diko), not root.
 #
-# Usage (prints to the terminal and pm2-gui.log):
+# Usage (messages go to the terminal and pm2-gui.log):
 #   sh synology-start.sh           # start if not already listening
 #   sh synology-start.sh stop      # stop dashboard only
 #   sh synology-start.sh restart   # stop then start (after code updates)
@@ -42,39 +42,29 @@ export PATH="${HOME:+$HOME/.npm-global/bin:}/usr/local/bin:/var/packages/Node.js
 LOG="$APP_DIR/pm2-gui.log"
 PORT="${PORT:-8088}"
 
+# IMPORTANT: write to stderr so `_pids=$(fn)` never captures log lines as PIDs.
 say () {
-  echo "$*"
+  echo "$*" >&2
   echo "$*" >> "$LOG"
 }
 
-is_real_pid () {
-  _pid=$1
-  case "$_pid" in
+is_numeric_pid () {
+  case "$1" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  [ "$_pid" -gt 1 ] || return 1
-  [ -d "/proc/$_pid" ] || return 1
-  # Prefer cmdline; with sudo we may still accept a live pid later
-  if [ -s "/proc/$_pid/cmdline" ]; then
-    return 0
-  fi
-  # Kernel threads: no cmdline and bracketed comm
-  _comm=$(cat "/proc/$_pid/comm" 2>/dev/null)
-  case "$_comm" in
-    '['*|migration*|kworker*|ksoftirq*|kthreadd) return 1 ;;
-  esac
-  [ -n "$_comm" ] || return 1
-  return 1
+  [ "$1" -gt 1 ] 2>/dev/null
 }
 
 pid_cmdline () {
-  if [ -r "/proc/$1/cmdline" ] && [ -s "/proc/$1/cmdline" ]; then
-    tr '\0' ' ' < "/proc/$1/cmdline"
+  _pid=$1
+  is_numeric_pid "$_pid" || return 0
+  if [ -r "/proc/$_pid/cmdline" ] && [ -s "/proc/$_pid/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$_pid/cmdline"
     echo
     return
   fi
   if command -v sudo >/dev/null 2>&1; then
-    sudo -n tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null && echo
+    sudo -n tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null && echo
   fi
 }
 
@@ -104,6 +94,7 @@ pids_holding_inode () {
 }
 
 # Root-owned listeners: /proc/PID/fd is not readable without elevation.
+# stdout = PIDs only (no log text).
 find_pids_via_sudo () {
   command -v sudo >/dev/null 2>&1 || return 0
   sudo sh -c '
@@ -145,6 +136,7 @@ pids_on_port () {
 dashboard_pids () {
   for _proc in /proc/[0-9]*; do
     _pid=${_proc#/proc/}
+    is_numeric_pid "$_pid" || continue
     [ -s "$_proc/cmdline" ] || continue
     _cmd=$(tr '\0' ' ' < "$_proc/cmdline" 2>/dev/null)
     case "$_cmd" in
@@ -155,27 +147,11 @@ dashboard_pids () {
   done
 }
 
+# Filter stdin/args down to unique numeric PIDs that still exist.
 unique_real_pids () {
-  echo "$*" | tr ' \n' '\n' | while read -r _p; do
-    case "$_p" in
-      ''|*[!0-9]*) continue ;;
-    esac
-    [ "$_p" -gt 1 ] || continue
+  echo "$*" | tr ' \n\t' '\n' | while read -r _p; do
+    is_numeric_pid "$_p" || continue
     [ -d "/proc/$_p" ] || continue
-    # Drop kernel threads
-    if [ ! -s "/proc/$_p/cmdline" ]; then
-      # May be root-owned cmdline; keep if sudo can read it later — for now keep numeric pids from sudo scan
-      _comm=$(cat "/proc/$_p/comm" 2>/dev/null)
-      case "$_comm" in
-        migration*|kworker*|ksoftirq*|kthreadd|rcu*|watchdog*) continue ;;
-      esac
-      # If cmdline unreadable but process exists, still allow (root-owned)
-      if [ ! -r "/proc/$_p/cmdline" ]; then
-        echo "$_p"
-        continue
-      fi
-      continue
-    fi
     echo "$_p"
   done | sort -u
 }
@@ -195,6 +171,7 @@ port_in_use () {
 kill_pid () {
   _pid=$1
   _sig=${2:-TERM}
+  is_numeric_pid "$_pid" || return 1
   if kill -s "$_sig" "$_pid" 2>/dev/null; then
     return 0
   fi
@@ -204,13 +181,15 @@ kill_pid () {
   return 1
 }
 
+# stdout = numeric PIDs only
 collect_dashboard_pids () {
-  _pids=$(unique_real_pids "$(dashboard_pids) $(pids_on_port)")
-  if [ -z "$_pids" ] && port_in_use; then
-    say "info: listener not owned by $(id -un) — using sudo to find pid"
-    _pids=$(unique_real_pids "$(find_pids_via_sudo)")
+  _found=$(unique_real_pids "$(dashboard_pids) $(pids_on_port)")
+  if [ -z "$_found" ] && port_in_use; then
+    say "info: listener not owned by $(id -un) — trying sudo to find pid"
+    _found=$(unique_real_pids "$(find_pids_via_sudo)")
   fi
-  echo "$_pids"
+  # Final filter so callers never see non-numeric junk
+  unique_real_pids "$_found"
 }
 
 show_status () {
@@ -228,14 +207,15 @@ show_status () {
   if [ -n "$_pids" ]; then
     say "status: dashboard pids: $_pids"
     for _p in $_pids; do
+      is_numeric_pid "$_p" || continue
       say "status:   pid $_p: $(pid_cmdline "$_p")"
     done
   else
     say "status: no dashboard pid found"
     if port_in_use; then
       say "status: port held by another user — run:"
-      say "status:   sudo netstat -ltnp | grep $PORT"
       say "status:   sudo fuser -k ${PORT}/tcp"
+      say "status:   sudo netstat -ltnp | grep $PORT"
       say "status: Set Task Scheduler → User to $(id -un) (not root)."
     fi
   fi
@@ -266,24 +246,43 @@ stop_dashboard () {
       say "stop: nothing listening on $PORT"
       return 0
     fi
-    say "stop: could not resolve pid — try:"
-    say "stop:   sudo fuser -k ${PORT}/tcp"
-    say "stop:   sudo netstat -ltnp | grep $PORT"
-    return 1
+    say "stop: could not resolve pid — trying sudo fuser"
+    if command -v sudo >/dev/null 2>&1; then
+      sudo fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+    if port_in_use; then
+      say "stop: port $PORT still in use — run:"
+      say "stop:   sudo fuser -k ${PORT}/tcp"
+      say "stop:   sudo netstat -ltnp | grep $PORT"
+      return 1
+    fi
+    say "stop: port $PORT is free"
+    return 0
   fi
 
   for _pid in $_pids; do
+    is_numeric_pid "$_pid" || continue
     say "stop: kill $_pid ($(pid_cmdline "$_pid"))"
     kill_pid "$_pid" TERM || true
   done
   sleep 1
   for _pid in $_pids; do
+    is_numeric_pid "$_pid" || continue
     if [ -d "/proc/$_pid" ]; then
       say "stop: kill -9 $_pid"
       kill_pid "$_pid" KILL || true
     fi
   done
   sleep 1
+
+  if port_in_use; then
+    say "stop: WARN port $PORT still in use — trying sudo fuser"
+    if command -v sudo >/dev/null 2>&1; then
+      sudo fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  fi
 
   if port_in_use; then
     say "stop: WARN port $PORT still in use"
@@ -325,7 +324,7 @@ start_dashboard () {
   _newpid=$!
   say "start: launched pid $_newpid at $(date 2>/dev/null)"
   sleep 1
-  if [ -d "/proc/$_newpid" ]; then
+  if is_numeric_pid "$_newpid" && [ -d "/proc/$_newpid" ]; then
     say "start: process $_newpid is alive: $(pid_cmdline "$_newpid")"
   else
     say "start: WARN process exited — check $LOG"

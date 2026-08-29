@@ -495,6 +495,73 @@ body {
   border-color: rgba(239, 68, 68, 0.35);
 }
 
+.confirm-panel {
+  width: min(480px, 100%);
+}
+
+.confirm-body .setup-actions {
+  margin-top: 18px;
+}
+
+.confirm-body #confirm-message,
+.confirm-body #prompt-message {
+  white-space: pre-wrap;
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.confirm-panel .modal-header p {
+  white-space: pre-wrap;
+}
+
+.btn-confirm-danger {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.btn-confirm-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.32);
+}
+
+.upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.upload-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #22d3ee);
+  transition: width 0.15s ease;
+}
+
+.upload-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-family: var(--mono);
+}
+
+.app.is-updating .row-actions button,
+.app.is-updating .row-actions a.btn,
+.app.is-updating .toolbar .btn-toolbar:not(#settings-btn) {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;

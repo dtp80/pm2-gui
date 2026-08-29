@@ -92,6 +92,49 @@ block content
 
     .toast-container#toast-container
 
+    .modal#confirm-modal(hidden)
+      .modal-backdrop(data-close='confirm-cancel')
+      .modal-panel.confirm-panel
+        .modal-header
+          div
+            h3#confirm-title Confirm
+            p#confirm-message
+          button.modal-close(data-close='confirm-cancel', aria-label='Close') ×
+        .modal-body.confirm-body
+          .setup-actions
+            button.btn.btn-primary#confirm-ok(type='button') Confirm
+            button.btn.btn-secondary(type='button', data-close='confirm-cancel') Cancel
+
+    .modal#prompt-modal(hidden)
+      .modal-backdrop(data-close='prompt-cancel')
+      .modal-panel.confirm-panel
+        .modal-header
+          div
+            h3#prompt-title Input required
+            p#prompt-message
+          button.modal-close(data-close='prompt-cancel', aria-label='Close') ×
+        .modal-body.confirm-body
+          input#prompt-input.add-project-input(type='text', autocomplete='off')
+          .setup-actions
+            button.btn.btn-primary#prompt-ok(type='button') Continue
+            button.btn.btn-secondary(type='button', data-close='prompt-cancel') Cancel
+
+    .modal#update-progress-modal(hidden)
+      .modal-backdrop
+      .modal-panel.confirm-panel
+        .modal-header
+          div
+            h3#update-progress-title Updating project
+            p#update-progress-subtitle Preparing upload…
+        .modal-body.confirm-body
+          .upload-progress
+            .upload-progress-track
+              .upload-progress-fill#update-progress-fill
+            .upload-progress-meta
+              span#update-progress-percent 0%
+              span#update-progress-detail
+          p.add-project-hint#update-progress-hint Process actions are paused until this finishes.
+
     .modal#setup-modal(hidden)
       .modal-backdrop(data-close='setup')
       .modal-panel.setup-panel
@@ -130,6 +173,9 @@ block content
             select#setting-public-protocol.agent-select
               option(value='http') http
               option(value='https') https
+            label.add-project-label(for='setting-projects-root') Default projects path
+            input#setting-projects-root.add-project-input(type='text', placeholder='/volume1/web')
+            p.add-project-hint New projects uploaded from your laptop are created as subfolders of this path (e.g. /volume1/web/MyApp).
             label.add-project-label(for='setting-refresh') System refresh interval
             input#setting-refresh.add-project-input(type='text', placeholder='5s')
             label.add-project-label(for='setting-process-refresh') Process metrics interval
@@ -284,6 +330,23 @@ block content
           .tab-panel#tab-log
             pre.log-view#modal-log Waiting for logs...
 
+  input#project-update-folder(
+    type='file',
+    webkitdirectory,
+    directory,
+    multiple,
+    hidden,
+    style='display:none'
+  )
+  input#project-create-folder(
+    type='file',
+    webkitdirectory,
+    directory,
+    multiple,
+    hidden,
+    style='display:none'
+  )
+
   input#authorization(type='hidden', value=authorization || '')
   script.
     window.GUI = {
@@ -291,8 +354,9 @@ block content
       readonly: #{readonly ? 'true' : 'false'},
       publicHost: !{JSON.stringify((web && web.public_host) || '')},
       publicProtocol: !{JSON.stringify((web && web.public_protocol) || '')},
+      projectsRoot: !{JSON.stringify((web && web.projects_root) || '')},
       authEnabled: #{authEnabled ? 'true' : 'false'},
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.4.3')
+  script(src='/js/app.js?v=0.4.7')
