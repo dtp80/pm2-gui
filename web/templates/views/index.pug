@@ -83,6 +83,7 @@ block content
                 th Name
                 th ID
                 th Mode
+                th Port
                 th CPU
                 th Memory
                 th Restarts
@@ -91,7 +92,7 @@ block content
                   th Actions
             tbody#process-list
               tr.loading-row
-                td(colspan=readonly ? 8 : 9)
+                td(colspan=readonly ? 9 : 10)
                   .loader Loading processes...
 
     .toast-container#toast-container
@@ -407,4 +408,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.5.4')
+  script(src='/js/app.js?v=0.5.7')

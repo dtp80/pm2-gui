@@ -228,6 +228,14 @@ body {
   color: var(--text-muted);
   padding: 6px 10px;
   font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon svg {
+  display: block;
+  flex-shrink: 0;
 }
 
 .btn-icon:hover:not(:disabled) {
@@ -1086,8 +1094,8 @@ body {
 
   .process-table th:nth-child(4),
   .process-table td:nth-child(4),
-  .process-table th:nth-child(7),
-  .process-table td:nth-child(7) {
+  .process-table th:nth-child(8),
+  .process-table td:nth-child(8) {
     display: none;
   }
 }

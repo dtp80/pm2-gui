@@ -26,6 +26,13 @@
 
   var CONNECT_TIMEOUT_MS = 8000
 
+  // Same glyph as toolbar #self-update-btn (download-to-tray / update from laptop)
+  var UPDATE_FROM_LAPTOP_ICON =
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+      '<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12M8 11l4 4 4-4"/>' +
+      '<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M4 19h16"/>' +
+    '</svg>'
+
   var state = {
     sysStat: null,
     processes: [],
@@ -877,7 +884,7 @@
   }
 
   function renderProcessTable () {
-    var colSpan = window.GUI.readonly ? 8 : 9
+    var colSpan = window.GUI.readonly ? 9 : 10
     var unmanaged = getUnmanagedSavedProjects()
     var totalRows = state.processes.length + unmanaged.length
 
@@ -898,6 +905,7 @@
     var mode = (env.exec_mode || '').replace(/_mode$/, '')
     var project = findProjectForProcess(proc)
     var pathHint = project ? project.path : (env.pm_cwd || '')
+    var port = resolveProcessPort(proc, project)
     var actions = window.GUI.readonly ? '' : (
       '<td class="row-actions">' +
         renderProcessActions(status, proc, project) +
@@ -910,6 +918,7 @@
         '<td>' + renderNameCell(proc.name || 'unknown', pathHint) + '</td>' +
         '<td>' + proc.pm_id + '</td>' +
         '<td><span class="mode-badge">' + escapeHtml(mode || 'fork') + '</span></td>' +
+        '<td>' + (port != null ? escapeHtml(String(port)) : '—') + '</td>' +
         '<td>' + formatPercent(proc.monit && proc.monit.cpu) + '</td>' +
         '<td>' + formatBytes(proc.monit && proc.monit.memory) + '</td>' +
         '<td>' + (env.restart_time || 0) + '</td>' +
@@ -923,9 +932,10 @@
     var entry = project.type === 'ecosystem'
       ? 'ecosystem config'
       : (project.script || 'index.js')
+    var port = resolveProcessPort(null, project)
     var actions = window.GUI.readonly ? '' : (
       '<td class="row-actions">' +
-        '<button class="btn btn-icon" data-project-update="' + project.id + '" title="Update from laptop" aria-label="Update from laptop">⬆</button>' +
+        '<button class="btn btn-icon" data-project-update="' + project.id + '" title="Update from laptop" aria-label="Update from laptop">' + UPDATE_FROM_LAPTOP_ICON + '</button>' +
         '<button class="btn btn-icon" data-project-start="' + project.id + '" title="start">▶</button>' +
         '<button class="btn btn-icon" data-project-delete="' + project.id + '" title="delete">✕</button>' +
       '</td>'
@@ -937,6 +947,7 @@
         '<td>' + renderNameCell(project.name, project.path, entry) + '</td>' +
         '<td>—</td>' +
         '<td><span class="mode-badge">—</span></td>' +
+        '<td>' + (port != null ? escapeHtml(String(port)) : '—') + '</td>' +
         '<td>—</td>' +
         '<td>—</td>' +
         '<td>—</td>' +
@@ -961,7 +972,7 @@
     var html = ''
     var updatePath = escapeAttr((project && project.path) || (proc.pm2_env && proc.pm2_env.pm_cwd) || '')
     var updateBtn = updatePath
-      ? '<button class="btn btn-icon" data-process-update="' + proc.pm_id + '" data-update-path="' + updatePath + '" title="Update from laptop" aria-label="Update from laptop">⬆</button>'
+      ? '<button class="btn btn-icon" data-process-update="' + proc.pm_id + '" data-update-path="' + updatePath + '" title="Update from laptop" aria-label="Update from laptop">' + UPDATE_FROM_LAPTOP_ICON + '</button>'
       : ''
 
     if (status === 'online') {
@@ -1008,12 +1019,26 @@
     return null
   }
 
+  function resolveProcessPort (proc, project) {
+    if (project && project.servicePort != null && project.servicePort !== '') {
+      var saved = parseInt(project.servicePort, 10)
+      if (saved > 0 && saved < 65536) {
+        return saved
+      }
+    }
+    if (!proc) {
+      return null
+    }
+    var env = proc.pm2_env || {}
+    return extractPortFromEnv(env.env) || extractPortFromEnv(env)
+  }
+
   function resolveServiceUrl (proc, project) {
     if (project && project.serviceUrl) {
       return project.serviceUrl
     }
 
-    var port = (project && project.servicePort) || extractPortFromEnv(proc.pm2_env && proc.pm2_env.env)
+    var port = resolveProcessPort(proc, project)
     if (!port) {
       return null
     }
@@ -2425,11 +2450,11 @@
       }
 
       setUpdateProgress(100, 'Restarting dashboard…')
-      toast(body.message || 'pm2-gui updated — restarting…')
+      toast(body.message || 'pm2-gui updated — restarting in 5s…')
       setTimeout(function () {
         hideUpdateProgressModal()
         window.location.reload()
-      }, 2500)
+      }, 5000)
     }
 
     xhr.send(form)
