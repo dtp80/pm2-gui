@@ -63,6 +63,17 @@ body {
 .brand-text h1 {
   margin: 0;
   font-size: 1.35rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.45em;
+  flex-wrap: wrap;
+}
+
+.brand-version {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .brand-subtitle {
@@ -407,8 +418,23 @@ body {
   color: #c7d2fe;
 }
 
+.process-table td .process-name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  flex-wrap: wrap;
+}
+
 .process-table td strong {
-  display: block;
+  display: inline;
+}
+
+.process-version {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .process-path {

@@ -92,6 +92,10 @@ action(function (req, res) {
 
   var pub = publicWebConfig(req)
   var authConfig = authService.getAuthConfig()
+  var guiVersion = null
+  try {
+    guiVersion = require('../../package.json').version || null
+  } catch (err) {}
   res.render('index', {
     title: 'Monitor',
     connections: connections,
@@ -99,7 +103,8 @@ action(function (req, res) {
     authorization: '',
     web: pub,
     authEnabled: authConfig.enabled,
-    user: currentUser(req)
+    user: currentUser(req),
+    guiVersion: guiVersion
   })
 })
 

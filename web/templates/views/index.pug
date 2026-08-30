@@ -6,7 +6,10 @@ block content
       .brand
         img.brand-logo(src='/img/pm2.webp', alt='PM2', width='48', height='48')
         .brand-text
-          h1 PM2 Monitor
+          h1
+            | PM2 Monitor
+            if guiVersion
+              span.brand-version= 'v' + guiVersion
           p.brand-subtitle#pm2-version Connecting...
       .header-actions
         if connections.length > 1
@@ -432,4 +435,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.6.1')
+  script(src='/js/app.js?v=0.6.2')

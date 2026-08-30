@@ -954,7 +954,7 @@
     return (
       '<tr class="is-clickable" data-pmid="' + proc.pm_id + '">' +
         '<td><span class="status-badge ' + status + '"><span class="status-dot"></span>' + status + '</span></td>' +
-        '<td>' + renderNameCell(proc.name || 'unknown', pathHint) + '</td>' +
+        '<td>' + renderNameCell(proc.name || 'unknown', pathHint, null, proc.appVersion) + '</td>' +
         '<td>' + proc.pm_id + '</td>' +
         '<td><span class="mode-badge">' + escapeHtml(mode || 'fork') + '</span></td>' +
         '<td>' + (port != null ? escapeHtml(String(port)) : '—') + '</td>' +
@@ -984,7 +984,7 @@
     return (
       '<tr class="is-saved" data-project-id="' + project.id + '">' +
         '<td><span class="status-badge saved"><span class="status-dot"></span>saved</span></td>' +
-        '<td>' + renderNameCell(project.name, project.path, entry) + '</td>' +
+        '<td>' + renderNameCell(project.name, project.path, entry, project.appVersion) + '</td>' +
         '<td>—</td>' +
         '<td><span class="mode-badge">—</span></td>' +
         '<td>' + (port != null ? escapeHtml(String(port)) : '—') + '</td>' +
@@ -997,8 +997,15 @@
     )
   }
 
-  function renderNameCell (name, pathHint, entry) {
-    var html = '<strong>' + escapeHtml(name) + '</strong>'
+  function renderNameCell (name, pathHint, entry, version) {
+    var html = '<span class="process-name-line">' +
+      '<strong>' + escapeHtml(name) + '</strong>'
+    if (version) {
+      html += '<span class="process-version" title="package.json version">v' +
+        escapeHtml(String(version).replace(/^v/i, '')) +
+        '</span>'
+    }
+    html += '</span>'
     if (pathHint) {
       html += '<span class="process-path" title="' + escapeHtml(pathHint) + '">' + escapeHtml(pathHint) + '</span>'
     }
