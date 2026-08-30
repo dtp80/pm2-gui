@@ -151,7 +151,7 @@
 
       // Clicks on SVG/path inside icon buttons must resolve to the button
       var target = event.target.closest(
-        'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete], [data-project-update], [data-process-update]'
+        'button, a.btn, a.btn-icon, [data-close], [data-settings-tab], [data-tab], [data-action], [data-project-start], [data-project-remove], [data-project-delete], [data-project-update], [data-project-edit], [data-process-update], [data-process-edit]'
       ) || event.target
 
       if (target.dataset.close === 'setup') {
@@ -370,6 +370,34 @@
         return
       }
 
+      if (target.dataset.processEdit) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
+        beginEditProcess({ pmId: target.dataset.processEdit })
+        return
+      }
+
+      if (target.dataset.projectEdit) {
+        if (state.updating) {
+          toast('Wait for the project update to finish', 'error')
+          return
+        }
+        beginEditProcess({ projectId: target.dataset.projectEdit })
+        return
+      }
+
+      if (target.dataset.close === 'edit-process-cancel') {
+        hideEditProcessModal()
+        return
+      }
+
+      if (target.id === 'edit-process-save') {
+        saveEditProcess()
+        return
+      }
+
       if (target.dataset.action && !window.GUI.readonly) {
         if (state.updating) {
           toast('Wait for the project update to finish', 'error')
@@ -415,6 +443,17 @@
       if (promptModal && !promptModal.hidden && event.target && event.target.id === 'prompt-input') {
         event.preventDefault()
         resolvePrompt(event.target.value)
+        return
+      }
+      var editModal = document.getElementById('edit-process-modal')
+      if (
+        editModal &&
+        !editModal.hidden &&
+        event.target &&
+        (event.target.id === 'edit-process-name' || event.target.id === 'edit-process-port')
+      ) {
+        event.preventDefault()
+        saveEditProcess()
       }
     })
 
@@ -935,6 +974,7 @@
     var port = resolveProcessPort(null, project)
     var actions = window.GUI.readonly ? '' : (
       '<td class="row-actions">' +
+        '<button class="btn btn-icon" data-project-edit="' + project.id + '" title="Edit" aria-label="Edit">✎</button>' +
         '<button class="btn btn-icon" data-project-update="' + project.id + '" title="Update from laptop" aria-label="Update from laptop">' + UPDATE_FROM_LAPTOP_ICON + '</button>' +
         '<button class="btn btn-icon" data-project-start="' + project.id + '" title="start">▶</button>' +
         '<button class="btn btn-icon" data-project-delete="' + project.id + '" title="delete">✕</button>' +
@@ -974,15 +1014,16 @@
     var updateBtn = updatePath
       ? '<button class="btn btn-icon" data-process-update="' + proc.pm_id + '" data-update-path="' + updatePath + '" title="Update from laptop" aria-label="Update from laptop">' + UPDATE_FROM_LAPTOP_ICON + '</button>'
       : ''
+    var editBtn = '<button class="btn btn-icon" data-process-edit="' + proc.pm_id + '" title="Edit name and port" aria-label="Edit">✎</button>'
 
     if (status === 'online') {
       var serviceUrl = resolveServiceUrl(proc, project)
       if (serviceUrl) {
         html += openServiceLink(serviceUrl)
       }
-      html += updateBtn + actionButton('restart', proc.pm_id) + actionButton('stop', proc.pm_id) + actionButton('delete', proc.pm_id)
+      html += editBtn + updateBtn + actionButton('restart', proc.pm_id) + actionButton('stop', proc.pm_id) + actionButton('delete', proc.pm_id)
     } else {
-      html += updateBtn + actionButton('start', proc.pm_id) + actionButton('delete', proc.pm_id)
+      html += editBtn + updateBtn + actionButton('start', proc.pm_id) + actionButton('delete', proc.pm_id)
     }
     return html
   }
@@ -1007,7 +1048,16 @@
     if (!env) {
       return null
     }
-    var keys = ['PORT', 'port', 'HTTP_PORT', 'SERVER_PORT', 'APP_PORT', 'WEB_PORT', 'NODE_PORT']
+    var keys = [
+      'SYNC_WEB_PORT',
+      'PORT',
+      'port',
+      'HTTP_PORT',
+      'SERVER_PORT',
+      'APP_PORT',
+      'WEB_PORT',
+      'NODE_PORT'
+    ]
     for (var i = 0; i < keys.length; i++) {
       if (env[keys[i]] != null && env[keys[i]] !== '') {
         var port = parseInt(env[keys[i]], 10)
@@ -1020,17 +1070,21 @@
   }
 
   function resolveProcessPort (proc, project) {
+    // Prefer the running process env — stored servicePort is only a hint for the open link.
+    if (proc) {
+      var env = proc.pm2_env || {}
+      var fromEnv = extractPortFromEnv(env.env) || extractPortFromEnv(env)
+      if (fromEnv != null) {
+        return fromEnv
+      }
+    }
     if (project && project.servicePort != null && project.servicePort !== '') {
       var saved = parseInt(project.servicePort, 10)
       if (saved > 0 && saved < 65536) {
         return saved
       }
     }
-    if (!proc) {
-      return null
-    }
-    var env = proc.pm2_env || {}
-    return extractPortFromEnv(env.env) || extractPortFromEnv(env)
+    return null
   }
 
   function resolveServiceUrl (proc, project) {
@@ -1389,12 +1443,39 @@
       message: message
     }).then(function (selection) {
       if (!selection) return
-      uploadProjectUpdate({
-        projectId: opts.projectId || null,
-        pmId: opts.pmId != null ? opts.pmId : null,
-        button: opts.button || null,
-        pathHint: pathHint
-      }, selection)
+      var currentPort = ''
+      if (opts.projectId) {
+        var proj = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
+        if (proj && proj.servicePort) currentPort = String(proj.servicePort)
+      } else if (opts.pmId != null) {
+        var proc = state.processes.find(function (p) { return p.pm_id === opts.pmId })
+        var linked = findProjectForProcess(proc)
+        if (linked && linked.servicePort) currentPort = String(linked.servicePort)
+        else {
+          var envPort = resolveProcessPort(proc, linked)
+          if (envPort != null) currentPort = String(envPort)
+        }
+      }
+      return showPromptModal({
+        title: 'Service port (optional)',
+        message:
+          'Leave blank to keep the current pm2-gui port' +
+          (currentPort ? ' (' + currentPort + ')' : '') +
+          ' and sync it into the uploaded files if they differ.\n\n' +
+          'Or enter a new port. Reserved/used ports (80, 443, 5000, 5001, pm2-gui, other apps) are rejected.',
+        inputType: 'number',
+        placeholder: currentPort || 'e.g. 3044',
+        defaultValue: ''
+      }).then(function (portValue) {
+        if (portValue === null) return
+        uploadProjectUpdate({
+          projectId: opts.projectId || null,
+          pmId: opts.pmId != null ? opts.pmId : null,
+          button: opts.button || null,
+          pathHint: pathHint,
+          servicePort: String(portValue || '').trim()
+        }, selection)
+      })
     }).catch(function (err) {
       toast(err.message || 'Could not read folder', 'error')
     })
@@ -1445,6 +1526,9 @@
     }
 
     var form = new FormData()
+    if (ctx.servicePort) {
+      form.append('servicePort', ctx.servicePort)
+    }
     var isZip = selection && (selection.mode === 'zip' || selection.archive)
     var totalBytes = (selection && selection.totalBytes) || 0
     var labelCount
@@ -1561,9 +1645,13 @@
       var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
       return showPromptModal({
         title: 'Service port (optional)',
-        message: 'Uploading to ' + targetHint + '\n\nEnter a service port for the open-in-browser link, or leave blank.',
+        message:
+          'Uploading to ' + targetHint + '\n\n' +
+          'Leave blank to use the port already defined in the project (.env / ecosystem).\n' +
+          'If you set a port, project files will be updated to match. Reserved/used ports ' +
+          '(80, 443, 5000, 5001, pm2-gui, other apps) are rejected.',
         inputType: 'number',
-        placeholder: 'e.g. 3000'
+        placeholder: 'e.g. 3044'
       }).then(function (portValue) {
         if (portValue === null) return
         uploadCreateProject({
@@ -2036,7 +2124,7 @@
       if (input) {
         input.type = options.inputType || 'text'
         input.placeholder = options.placeholder || ''
-        input.value = options.value || ''
+        input.value = options.defaultValue != null ? options.defaultValue : (options.value || '')
         input.autocomplete = options.autocomplete || 'off'
       }
       if (modal) modal.hidden = false
@@ -2044,6 +2132,133 @@
         if (input) input.focus()
       }, 50)
     })
+  }
+
+  var editProcessContext = null
+
+  function hideEditProcessModal () {
+    editProcessContext = null
+    var modal = document.getElementById('edit-process-modal')
+    if (modal) modal.hidden = true
+    var saveBtn = document.getElementById('edit-process-save')
+    if (saveBtn) {
+      saveBtn.disabled = false
+      saveBtn.textContent = 'Save & restart'
+    }
+  }
+
+  function beginEditProcess (opts) {
+    opts = opts || {}
+    if (window.GUI.readonly) {
+      toast('Server is in read-only mode', 'error')
+      return
+    }
+
+    var name = ''
+    var port = ''
+    var subtitle = ''
+
+    if (opts.projectId) {
+      var project = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
+      if (!project) {
+        toast('Saved project not found', 'error')
+        return
+      }
+      name = project.name || ''
+      port = project.servicePort != null ? String(project.servicePort) : ''
+      subtitle = project.path || ''
+      editProcessContext = { projectId: project.id }
+    } else if (opts.pmId != null) {
+      var proc = state.processes.find(function (p) { return String(p.pm_id) === String(opts.pmId) })
+      if (!proc) {
+        toast('Process not found', 'error')
+        return
+      }
+      var linked = findProjectForProcess(proc)
+      // Prefer PM2 display name (bold label in the table), not the folder basename.
+      name = proc.name || (linked && linked.name) || ''
+      var resolvedPort = resolveProcessPort(proc, linked)
+      port = resolvedPort != null ? String(resolvedPort) : ''
+      subtitle = (linked && linked.path) || (proc.pm2_env && proc.pm2_env.pm_cwd) || ('ID ' + proc.pm_id)
+      editProcessContext = { pmId: proc.pm_id }
+    } else {
+      toast('Missing process or project', 'error')
+      return
+    }
+
+    var titleEl = document.getElementById('edit-process-title')
+    var subEl = document.getElementById('edit-process-subtitle')
+    var nameInput = document.getElementById('edit-process-name')
+    var portInput = document.getElementById('edit-process-port')
+    var modal = document.getElementById('edit-process-modal')
+    if (titleEl) titleEl.textContent = 'Edit process'
+    if (subEl) subEl.textContent = subtitle
+    if (nameInput) nameInput.value = name
+    if (portInput) portInput.value = port
+    if (modal) modal.hidden = false
+    setTimeout(function () {
+      if (nameInput) nameInput.focus()
+    }, 50)
+  }
+
+  function saveEditProcess () {
+    if (!editProcessContext || window.GUI.readonly) return
+
+    var nameInput = document.getElementById('edit-process-name')
+    var portInput = document.getElementById('edit-process-port')
+    var name = nameInput ? nameInput.value.trim() : ''
+    var port = portInput ? portInput.value.trim() : ''
+    if (!name) {
+      toast('Name is required', 'error')
+      if (nameInput) nameInput.focus()
+      return
+    }
+
+    var url
+    if (editProcessContext.projectId) {
+      url = '/projects_api/' + encodeURIComponent(editProcessContext.projectId) + '/edit'
+    } else if (editProcessContext.pmId != null) {
+      url = '/processes_api/' + encodeURIComponent(editProcessContext.pmId) + '/edit'
+    } else {
+      toast('Missing process or project', 'error')
+      return
+    }
+
+    var saveBtn = document.getElementById('edit-process-save')
+    if (saveBtn) {
+      saveBtn.disabled = true
+      saveBtn.textContent = 'Saving…'
+    }
+
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, servicePort: port })
+    })
+      .then(parseApiResponse)
+      .then(function (result) {
+        if (!result.ok) {
+          throw new Error(result.body.error || 'Could not save changes')
+        }
+        hideEditProcessModal()
+        if (result.body.warning) {
+          toast(result.body.warning, 'error')
+        } else {
+          toast('Saved and restarted ' + name)
+        }
+        if (state.sockets.process && state.sockets.process.connected) {
+          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+        }
+        loadSavedProjects()
+      })
+      .catch(function (err) {
+        toast(err.message || 'Could not save changes', 'error')
+        if (saveBtn) {
+          saveBtn.disabled = false
+          saveBtn.textContent = 'Save & restart'
+        }
+      })
   }
 
   function resolvePrompt (value) {

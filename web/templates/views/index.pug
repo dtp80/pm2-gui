@@ -157,6 +157,30 @@ block content
               span#update-progress-detail
           p.add-project-hint#update-progress-hint Process actions are paused until this finishes.
 
+    .modal.modal-stack#edit-process-modal(hidden)
+      .modal-backdrop(data-close='edit-process-cancel')
+      .modal-panel.confirm-panel
+        .modal-header
+          div
+            h3#edit-process-title Edit process
+            p#edit-process-subtitle
+          button.modal-close(data-close='edit-process-cancel', aria-label='Close') ×
+        .modal-body.confirm-body
+          label.add-project-label(for='edit-process-name') Display name
+          input#edit-process-name.add-project-input(type='text', autocomplete='off', maxlength='120')
+          label.add-project-label(for='edit-process-port') Port
+          input#edit-process-port.add-project-input(
+            type='number',
+            placeholder='e.g. 3044',
+            min='1',
+            max='65535',
+            autocomplete='off'
+          )
+          p.add-project-hint The display name is the bold label in the process list (not the folder path). Port cannot be 80, 443, 5000, 5001, the pm2-gui port, or another project's port. Saving updates project files and restarts the process.
+          .setup-actions
+            button.btn.btn-primary#edit-process-save(type='button') Save & restart
+            button.btn.btn-secondary(type='button', data-close='edit-process-cancel') Cancel
+
     .modal.modal-stack#debug-log-modal(hidden)
       .modal-backdrop(data-close='debug-log')
       .modal-panel.debug-log-panel
@@ -351,7 +375,7 @@ block content
             max='65535',
             autocomplete='off'
           )
-          p.add-project-hint Used for the open-in-browser link. Leave blank if the app sets PORT in its environment.
+          p.add-project-hint Optional. Leave blank to detect PORT / SYNC_WEB_PORT from the project. If set, files are updated to that port. Cannot use 80, 443, 5000, 5001, the pm2-gui port, or another project's port.
           .setup-actions
             button.btn.btn-primary#add-project-submit(type='button') Add project
             button.btn.btn-secondary(type='button', data-close='add-project') Cancel
@@ -408,4 +432,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.5.7')
+  script(src='/js/app.js?v=0.6.1')

@@ -4,6 +4,8 @@ var setupStatus = require('../../lib/setup-status')
 var folderPicker = require('../../lib/folder-picker')
 var projectsStore = require('../../lib/projects-store')
 var projectUpdate = require('../../lib/project-update')
+var processEdit = require('../../lib/process-edit')
+var servicePort = require('../../lib/service-port')
 var settings = require('../../lib/settings')
 var authService = require('../../lib/auth-service')
 var telegram = require('../../lib/telegram')
@@ -460,6 +462,13 @@ action('post', 'projects_api/browse', function projects_browse_api (req, res) { 
       if (req.body && req.body.serviceUrl) {
         extras.serviceUrl = req.body.serviceUrl
       }
+      if (extras.servicePort) {
+        servicePort.assertPortAvailable(extras.servicePort, { excludePath: folder })
+        servicePort.applyPortToProject(folder, extras.servicePort)
+      } else {
+        var detected = servicePort.detectPortFromProject(folder)
+        if (detected.port) extras.servicePort = detected.port
+      }
       var project = projectsStore.addProject(folder, extras)
       res.json({ project: project })
     } catch (addErr) {
@@ -488,6 +497,13 @@ action('post', 'projects_api/add', function projects_add_api (req, res) { // esl
     }
     if (req.body && req.body.serviceUrl) {
       extras.serviceUrl = req.body.serviceUrl
+    }
+    if (extras.servicePort) {
+      servicePort.assertPortAvailable(extras.servicePort, { excludePath: folder })
+      servicePort.applyPortToProject(folder, extras.servicePort)
+    } else {
+      var detectedAdd = servicePort.detectPortFromProject(folder)
+      if (detectedAdd.port) extras.servicePort = detectedAdd.port
     }
     var project = projectsStore.addProject(folder, extras)
     res.json({ project: project })
@@ -530,6 +546,57 @@ action('post', 'projects_api/:id/start', function projects_start_api (req, res) 
       return res.status(500).json({ error: err.message })
     }
     res.json({ status: 'started', project: project, process: proc })
+  })
+})
+
+action('post', 'projects_api/:id/edit', function projects_edit_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+  if (!projectsStore.findProject(req.params.id)) {
+    return res.status(404).json({ error: 'Project not found' })
+  }
+
+  processEdit.applyProcessEdit({
+    projectId: req.params.id,
+    name: req.body && req.body.name,
+    servicePort: req.body && req.body.servicePort,
+    pm2Home: req._config && req._config.pm2
+  }, function (editErr, result) {
+    if (editErr) {
+      var status = /Choose a different port|Invalid port|reserved by the system|Name /i.test(editErr.message)
+        ? 400
+        : 500
+      return res.status(status).json({ error: editErr.message })
+    }
+    res.json(result)
+  })
+})
+
+action('post', 'processes_api/:pmId/edit', function processes_edit_api (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  if (denyIfReadonly(req, res)) {
+    return
+  }
+
+  processEdit.applyProcessEdit({
+    pmId: req.params.pmId,
+    name: req.body && req.body.name,
+    servicePort: req.body && req.body.servicePort,
+    pm2Home: req._config && req._config.pm2
+  }, function (editErr, result) {
+    if (editErr) {
+      var status = /Choose a different port|Invalid port|reserved by the system|Name /i.test(editErr.message)
+        ? 400
+        : 500
+      return res.status(status).json({ error: editErr.message })
+    }
+    res.json(result)
   })
 })
 
@@ -577,7 +644,10 @@ function handleProjectUpdateUpload (req, res, target) {
     projectUpdate.applyUpdate(opts, function (updateErr, result) {
       projectUpdate.cleanupFiles(files)
       if (updateErr) {
-        return res.status(500).json({ error: updateErr.message })
+        var status = /Choose a different port|Invalid port|reserved by the system/i.test(updateErr.message)
+          ? 400
+          : 500
+        return res.status(status).json({ error: updateErr.message })
       }
       res.json(result)
     })
@@ -638,7 +708,10 @@ action('post', 'projects_api/create_from_upload', function projects_create_from_
     }, function (createErr, result) {
       projectUpdate.cleanupFiles(files)
       if (createErr) {
-        return res.status(500).json({ error: createErr.message })
+        var status = /Choose a different port|Invalid port|reserved by the system/i.test(createErr.message)
+          ? 400
+          : 500
+        return res.status(status).json({ error: createErr.message })
       }
       res.json(result)
     })
