@@ -650,20 +650,29 @@
   }
 
   function findProjectForProcess (proc) {
+    if (!proc) return null
     var cwd = proc.pm2_env && proc.pm2_env.pm_cwd
     if (!cwd) {
       return null
     }
     var normalized = normalizePath(cwd)
-    return state.savedProjects.find(function (project) {
+    return (state.savedProjects || []).find(function (project) {
       return normalizePath(project.path) === normalized
     }) || null
   }
 
+  function findProcessByPmId (pmId) {
+    var needle = String(pmId)
+    return state.processes.find(function (p) {
+      return p && String(p.pm_id) === needle
+    }) || null
+  }
+
   function findProcessForProject (project) {
+    if (!project) return null
     var normalized = normalizePath(project.path)
     return state.processes.find(function (proc) {
-      var cwd = proc.pm2_env && proc.pm2_env.pm_cwd
+      var cwd = proc && proc.pm2_env && proc.pm2_env.pm_cwd
       return cwd && normalizePath(cwd) === normalized
     }) || null
   }
@@ -1455,7 +1464,7 @@
         var proj = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
         if (proj && proj.servicePort) currentPort = String(proj.servicePort)
       } else if (opts.pmId != null) {
-        var proc = state.processes.find(function (p) { return p.pm_id === opts.pmId })
+        var proc = findProcessByPmId(opts.pmId)
         var linked = findProjectForProcess(proc)
         if (linked && linked.servicePort) currentPort = String(linked.servicePort)
         else {
@@ -1571,9 +1580,9 @@
     }
 
     xhr.upload.onload = function () {
-      setUpdateProgress(92, 'Upload complete — running install, then starting…')
+      setUpdateProgress(92, 'Upload complete — installing packages, then restarting…')
       var subEl = document.getElementById('update-progress-subtitle')
-      if (subEl) subEl.textContent = 'Applying update on the server (pnpm/npm install)…'
+      if (subEl) subEl.textContent = 'Running pnpm/npm install for new dependencies…'
     }
 
     xhr.onerror = function () {
@@ -1863,7 +1872,7 @@
   }
 
   function openProcessModal (pmId) {
-    var proc = state.processes.find(function (p) { return p.pm_id === pmId })
+    var proc = findProcessByPmId(pmId)
     if (!proc) {
       return
     }
