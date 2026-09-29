@@ -52,7 +52,8 @@
     confirmResolver: null,
     promptResolver: null,
     folderPickResolver: null,
-    folderPickBound: false
+    folderPickBound: false,
+    folderPickSourceKey: null
   }
 
   var els = {}
@@ -220,6 +221,11 @@
         return
       }
 
+      if (target.id === 'modal-log-copy') {
+        copyProcessLog()
+        return
+      }
+
       if (target.id === 'debug-log-refresh') {
         openDebugLogModal()
         return
@@ -232,6 +238,11 @@
 
       if (target.id === 'folder-pick-browse') {
         browseFolderFromPickModal()
+        return
+      }
+
+      if (target.id === 'folder-pick-upload-last') {
+        uploadFromSavedFolderSource()
         return
       }
 
@@ -1151,6 +1162,9 @@
 
   var UPDATE_EXCLUDE_RE = /^(node_modules|\.git|\.svn|\.hg|logs?|\.DS_Store|Thumbs\.db|\.next|\.nuxt|\.cache|coverage|\.turbo|\.vercel|data|\.pm2-gui-boot\.env|pm2-gui\.log|pm2-gui\.pid)$/i
   var MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+  var UPLOAD_SOURCE_LS_KEY = 'pm2gui.uploadSources.v1'
+  var UPLOAD_SOURCE_IDB_NAME = 'pm2gui-upload-sources'
+  var UPLOAD_SOURCE_IDB_STORE = 'handles'
 
   function isExcludedUpdatePath (relPath) {
     return String(relPath || '').replace(/\\/g, '/').split('/').some(function (part) {
@@ -1169,6 +1183,240 @@
 
   function supportsDirectoryPicker () {
     return !!(window.isSecureContext && typeof window.showDirectoryPicker === 'function')
+  }
+
+  function normalizeUploadSourceKey (key) {
+    return String(key || 'default').trim() || 'default'
+  }
+
+  function resolveUploadSourceKey (opts) {
+    opts = opts || {}
+    if (opts.sourceKey) return normalizeUploadSourceKey(opts.sourceKey)
+    if (opts.pathHint) {
+      return normalizeUploadSourceKey(
+        'path:' + String(opts.pathHint).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+      )
+    }
+    if (opts.projectId) return normalizeUploadSourceKey('project:' + opts.projectId)
+    if (opts.pmId != null) return normalizeUploadSourceKey('process:' + opts.pmId)
+    return 'default'
+  }
+
+  function readUploadSourceMetaMap () {
+    try {
+      var raw = window.localStorage.getItem(UPLOAD_SOURCE_LS_KEY)
+      var parsed = raw ? JSON.parse(raw) : {}
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch (err) {
+      return {}
+    }
+  }
+
+  function writeUploadSourceMetaMap (map) {
+    try {
+      window.localStorage.setItem(UPLOAD_SOURCE_LS_KEY, JSON.stringify(map || {}))
+    } catch (err) {}
+  }
+
+  function getUploadSourceMeta (sourceKey) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    var entry = readUploadSourceMetaMap()[key]
+    if (!entry || typeof entry !== 'object') return null
+    var folderName = String(entry.folderName || entry.displayPath || '').trim()
+    if (!folderName) return null
+    return {
+      folderName: folderName,
+      displayPath: String(entry.displayPath || folderName).trim() || folderName,
+      updatedAt: entry.updatedAt || null
+    }
+  }
+
+  function setUploadSourceMeta (sourceKey, meta) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    var map = readUploadSourceMetaMap()
+    map[key] = {
+      folderName: meta.folderName,
+      displayPath: meta.displayPath || meta.folderName,
+      updatedAt: Date.now()
+    }
+    writeUploadSourceMetaMap(map)
+  }
+
+  function openUploadSourceDb () {
+    return new Promise(function (resolve, reject) {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB unavailable'))
+        return
+      }
+      var req = window.indexedDB.open(UPLOAD_SOURCE_IDB_NAME, 1)
+      req.onupgradeneeded = function () {
+        var db = req.result
+        if (!db.objectStoreNames.contains(UPLOAD_SOURCE_IDB_STORE)) {
+          db.createObjectStore(UPLOAD_SOURCE_IDB_STORE)
+        }
+      }
+      req.onsuccess = function () { resolve(req.result) }
+      req.onerror = function () { reject(req.error || new Error('IndexedDB open failed')) }
+    })
+  }
+
+  function idbStoreRequest (mode, fn) {
+    return openUploadSourceDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(UPLOAD_SOURCE_IDB_STORE, mode)
+        var store = tx.objectStore(UPLOAD_SOURCE_IDB_STORE)
+        var req
+        try {
+          req = fn(store)
+        } catch (err) {
+          db.close()
+          reject(err)
+          return
+        }
+        var settled = false
+        function finish (err, value) {
+          if (settled) return
+          settled = true
+          try { db.close() } catch (closeErr) {}
+          if (err) reject(err)
+          else resolve(value)
+        }
+        if (req && typeof req.onsuccess !== 'undefined') {
+          req.onsuccess = function () {
+            // Prefer request result; transaction may still be open.
+          }
+          req.onerror = function () {
+            finish(req.error || new Error('IndexedDB request failed'))
+          }
+        }
+        tx.oncomplete = function () {
+          finish(null, req && typeof req.result !== 'undefined' ? req.result : undefined)
+        }
+        tx.onerror = function () {
+          finish(tx.error || new Error('IndexedDB transaction failed'))
+        }
+        tx.onabort = function () {
+          finish(tx.error || new Error('IndexedDB transaction aborted'))
+        }
+      })
+    })
+  }
+
+  function saveUploadSourceHandle (sourceKey, dirHandle) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    if (!dirHandle) {
+      return clearUploadSourceHandle(key)
+    }
+    return idbStoreRequest('readwrite', function (store) {
+      return store.put(dirHandle, key)
+    }).catch(function () { return null })
+  }
+
+  function clearUploadSourceHandle (sourceKey) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    return idbStoreRequest('readwrite', function (store) {
+      return store.delete(key)
+    }).catch(function () { return null })
+  }
+
+  function loadUploadSourceHandle (sourceKey) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    return idbStoreRequest('readonly', function (store) {
+      return store.get(key)
+    }).catch(function () { return null })
+  }
+
+  function rememberUploadSource (sourceKey, selection) {
+    if (!sourceKey || !selection) return
+    var folderName = selection.folderName || 'project'
+    setUploadSourceMeta(sourceKey, {
+      folderName: folderName,
+      displayPath: selection.displayPath || folderName
+    })
+    if (selection.dirHandle) {
+      saveUploadSourceHandle(sourceKey, selection.dirHandle)
+    } else {
+      clearUploadSourceHandle(sourceKey)
+    }
+    refreshFolderLastSourceUi(sourceKey)
+  }
+
+  function refreshFolderLastSourceUi (sourceKey) {
+    var wrap = document.getElementById('folder-last-source')
+    var pathEl = document.getElementById('folder-last-source-path')
+    if (!wrap || !pathEl) return
+    var meta = getUploadSourceMeta(sourceKey)
+    if (!meta) {
+      wrap.hidden = true
+      pathEl.textContent = ''
+      return
+    }
+    pathEl.textContent = meta.displayPath || meta.folderName
+    pathEl.title = meta.displayPath || meta.folderName
+    wrap.hidden = false
+  }
+
+  function ensureDirectoryPermission (dirHandle) {
+    if (!dirHandle || typeof dirHandle.queryPermission !== 'function') {
+      return Promise.resolve(!!dirHandle)
+    }
+    return dirHandle.queryPermission({ mode: 'read' }).then(function (status) {
+      if (status === 'granted') return true
+      if (typeof dirHandle.requestPermission !== 'function') return false
+      return dirHandle.requestPermission({ mode: 'read' }).then(function (next) {
+        return next === 'granted'
+      })
+    }).catch(function () { return false })
+  }
+
+  function selectionFromDirHandle (dirHandle) {
+    var collected = []
+    return collectFilesFromDirHandle(dirHandle, '', collected).then(function () {
+      return prepareUploadSelection(collected.map(function (item) {
+        return { file: item.file, relPath: item.relPath }
+      }), dirHandle.name, dirHandle)
+    })
+  }
+
+  function uploadFromSavedFolderSource () {
+    var sourceKey = state.folderPickSourceKey
+    if (!sourceKey) {
+      browseFolderFromPickModal()
+      return
+    }
+    var meta = getUploadSourceMeta(sourceKey)
+    setFolderPickStatus(meta ? ('Reading ' + meta.folderName + '…') : 'Reading saved folder…')
+
+    loadUploadSourceHandle(sourceKey).then(function (dirHandle) {
+      if (!dirHandle) {
+        setFolderPickStatus(meta
+          ? 'Choose “' + meta.folderName + '” again (browser cannot reopen it automatically).'
+          : '')
+        browseFolderFromPickModal()
+        return null
+      }
+      return ensureDirectoryPermission(dirHandle).then(function (granted) {
+        if (!granted) {
+          setFolderPickStatus('Permission needed — pick the folder again.')
+          browseFolderFromPickModal()
+          return null
+        }
+        return selectionFromDirHandle(dirHandle)
+      })
+    }).then(function (selection) {
+      if (!selection) return
+      rememberUploadSource(sourceKey, selection)
+      resolveFolderPick(selection)
+    }).catch(function (err) {
+      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+        setFolderPickStatus('')
+        return
+      }
+      clearUploadSourceHandle(sourceKey)
+      toast((err && err.message) || 'Could not reopen saved folder — browse again.', 'error')
+      setFolderPickStatus('')
+      browseFolderFromPickModal()
+    })
   }
 
   function collectFilesFromDirHandle (dirHandle, prefix, out) {
@@ -1193,7 +1441,8 @@
   function pickLocalProjectFolder () {
     return showFolderPickModal({
       title: 'Choose project folder',
-      message: 'Drop a folder below, or browse. node_modules and .git are skipped.'
+      message: 'Drop a folder below, or browse. node_modules and .git are skipped.',
+      sourceKey: 'create'
     })
   }
 
@@ -1204,6 +1453,7 @@
         state.folderPickResolver(null)
       }
       state.folderPickResolver = resolve
+      state.folderPickSourceKey = normalizeUploadSourceKey(options.sourceKey || 'default')
 
       var modal = document.getElementById('folder-pick-modal')
       var title = document.getElementById('folder-pick-title')
@@ -1212,12 +1462,16 @@
       if (title) title.textContent = options.title || 'Choose project folder'
       if (message) message.textContent = options.message || ''
       if (status) status.textContent = ''
+      refreshFolderLastSourceUi(state.folderPickSourceKey)
       bindFolderDropzoneOnce()
       if (modal) modal.hidden = false
     })
   }
 
   function resolveFolderPick (selection) {
+    if (selection && state.folderPickSourceKey) {
+      rememberUploadSource(state.folderPickSourceKey, selection)
+    }
     var modal = document.getElementById('folder-pick-modal')
     if (modal) modal.hidden = true
     var status = document.getElementById('folder-dropzone-status')
@@ -1289,7 +1543,7 @@
     setFolderPickStatus('Reading ' + dirEntry.name + '…')
     var collected = []
     return readDirectoryEntry(dirEntry, '', collected).then(function () {
-      var selection = prepareUploadSelection(collected, dirEntry.name)
+      var selection = prepareUploadSelection(collected, dirEntry.name, null)
       setFolderPickStatus('Ready: ' + selection.files.length + ' files')
       resolveFolderPick(selection)
     })
@@ -1329,16 +1583,22 @@
 
   function browseFolderFromPickModal () {
     setFolderPickStatus('Opening folder picker…')
-    var picker = supportsDirectoryPicker()
-      ? window.showDirectoryPicker({ mode: 'read' }).then(function (dirHandle) {
-        var collected = []
-        return collectFilesFromDirHandle(dirHandle, '', collected).then(function () {
-          return prepareUploadSelection(collected.map(function (item) {
-            return { file: item.file, relPath: item.relPath }
-          }), dirHandle.name)
+    var sourceKey = state.folderPickSourceKey
+    var pickerPromise = Promise.resolve(null)
+    if (supportsDirectoryPicker() && sourceKey) {
+      pickerPromise = loadUploadSourceHandle(sourceKey).catch(function () { return null })
+    }
+
+    var picker = pickerPromise.then(function (savedHandle) {
+      if (supportsDirectoryPicker()) {
+        var opts = { mode: 'read' }
+        if (savedHandle) opts.startIn = savedHandle
+        return window.showDirectoryPicker(opts).then(function (dirHandle) {
+          return selectionFromDirHandle(dirHandle)
         })
-      })
-      : pickLocalProjectFolderViaInput()
+      }
+      return pickLocalProjectFolderViaInput()
+    })
 
     Promise.resolve(picker).then(function (selection) {
       if (!selection) {
@@ -1383,7 +1643,7 @@
           return { file: file, relPath: relativeUpdatePath(file) }
         })
         try {
-          resolve(prepareUploadSelection(collected, folderName))
+          resolve(prepareUploadSelection(collected, folderName, null))
         } catch (err) {
           toast(err.message, 'error')
           resolve(null)
@@ -1393,7 +1653,7 @@
     })
   }
 
-  function prepareUploadSelection (collected, folderName) {
+  function prepareUploadSelection (collected, folderName, dirHandle) {
     var paths = []
     var uploadFiles = []
     var totalBytes = 0
@@ -1415,6 +1675,8 @@
 
     return {
       folderName: folderName || 'project',
+      displayPath: folderName || 'project',
+      dirHandle: dirHandle || null,
       mode: 'files',
       files: uploadFiles,
       paths: paths,
@@ -1456,7 +1718,12 @@
 
     showFolderPickModal({
       title: 'Update project from laptop',
-      message: message
+      message: message,
+      sourceKey: resolveUploadSourceKey({
+        projectId: opts.projectId,
+        pmId: opts.pmId,
+        pathHint: pathHint
+      })
     }).then(function (selection) {
       if (!selection) return
       var currentPort = ''
@@ -1655,7 +1922,8 @@
       title: 'Add project from laptop',
       message: 'Uploads to ' + root + '/<folder-name>, then installs and starts with PM2.\n' +
         'If that folder already exists, it will be overwritten.\n\n' +
-        'Drop the project folder below (recommended), or browse.'
+        'Drop the project folder below (recommended), or browse.',
+      sourceKey: 'create'
     }).then(function (selection) {
       if (!selection) return
       var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
@@ -1932,7 +2200,7 @@
       state.sockets.log.emit(EVENTS.PULL_LOGS, pmId, true)
     })
     state.sockets.log.on(EVENTS.DATA, function (payload) {
-      if (!state.selectedProc || payload.id !== state.selectedProc.pm_id) {
+      if (!state.selectedProc || String(payload.id) !== String(state.selectedProc.pm_id)) {
         return
       }
       appendLog(payload.text || '')
@@ -1952,14 +2220,42 @@
     }
   }
 
+  function getLastLogLines (text, count) {
+    var lines = String(text || '').replace(/\r\n/g, '\n').split('\n')
+    if (lines.length && lines[lines.length - 1] === '') {
+      lines.pop()
+    }
+    return lines.slice(-count).join('\n')
+  }
+
+  function copyProcessLog () {
+    var text = els.modalLog ? els.modalLog.textContent : ''
+    var trimmed = (text || '').trim()
+    if (!trimmed || /^waiting for logs/i.test(trimmed)) {
+      toast('Nothing to copy', 'error')
+      return
+    }
+    var snippet = getLastLogLines(text, 50)
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(snippet).then(function () {
+        toast('Last 50 log lines copied')
+      }).catch(function () {
+        fallbackCopyText(snippet)
+      })
+      return
+    }
+    fallbackCopyText(snippet)
+  }
+
   function appendLog (text) {
     if (!text) {
       return
     }
-    if (els.modalLog.textContent === 'Waiting for logs...') {
+    var current = els.modalLog.textContent || ''
+    if (/waiting for logs/i.test(current.trim())) {
       els.modalLog.textContent = ''
     }
-    els.modalLog.insertAdjacentHTML('beforeend', text + '\n')
+    els.modalLog.appendChild(document.createTextNode(text + '\n'))
     if (state.logAutoScroll) {
       els.modalLog.scrollTop = els.modalLog.scrollHeight
     }
@@ -2607,7 +2903,8 @@
     showFolderPickModal({
       title: 'Update pm2-gui',
       message: 'Drop the pm2-gui project folder below, or browse.\n\n' +
-        'Files are overwritten, npm install runs, then synology-start.sh restarts the dashboard.'
+        'Files are overwritten, npm install runs, then synology-start.sh restarts the dashboard.',
+      sourceKey: 'self-update'
     }).then(function (selection) {
       if (!selection) return
       uploadSelfUpdate(selection)

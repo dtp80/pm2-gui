@@ -136,6 +136,11 @@ block content
             p#folder-pick-message
           button.modal-close(data-close='folder-pick-cancel', aria-label='Close') ×
         .modal-body.confirm-body
+          .folder-last-source#folder-last-source(hidden)
+            .folder-last-source-meta
+              span.folder-last-source-label Last used source
+              code.folder-last-source-path#folder-last-source-path
+            button.btn.btn-primary#folder-pick-upload-last(type='button') Upload
           .folder-dropzone#folder-dropzone(tabindex='0')
             .folder-dropzone-title Drop a folder here
             p.folder-dropzone-hint Drag the project folder from your computer into this box.
@@ -404,7 +409,18 @@ block content
               span.legend-cpu CPU
               span.legend-mem Memory
           .tab-panel#tab-log
-            pre.log-view#modal-log Waiting for logs...
+            .log-panel
+              button.btn.btn-icon.log-copy-btn#modal-log-copy(
+                type='button',
+                title='Copy last 50 lines',
+                aria-label='Copy last 50 lines'
+              )
+                svg(viewBox='0 0 24 24', width='16', height='16', aria-hidden='true')
+                  path(
+                    fill='currentColor',
+                    d='M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z'
+                  )
+              pre.log-view#modal-log Waiting for logs...
 
   input#project-update-folder(
     type='file',
@@ -435,4 +451,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.6.3')
+  script(src='/js/app.js?v=0.6.7')
