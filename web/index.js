@@ -50,6 +50,10 @@ module.exports = function (options) {
   router(app)
 
   var server = http.createServer(app)
+  // Project uploads run pnpm install on the NAS; keep sockets open.
+  try { server.requestTimeout = 0 } catch (err) {}
+  try { server.headersTimeout = 0 } catch (err) {}
+  try { server.timeout = 0 } catch (err) {}
   server.listen(options.port)
   server.sessionMiddleware = sessionMiddleware
   return server

@@ -243,6 +243,7 @@ block content
           button.tab(data-settings-tab='auth') Authentication
           button.tab(data-settings-tab='telegram') Telegram
           button.tab(data-settings-tab='startup') Startup
+          button.tab(data-settings-tab='api') API
           button.tab(data-settings-tab='security') Security
         .modal-body.settings-body
           .tab-panel.active#settings-tab-general
@@ -338,6 +339,35 @@ block content
             p.add-project-hint If automatic creation fails (common without DSM admin rights), use the manual steps below.
             ol.setup-steps#startup-instructions
             .startup-result#startup-result(hidden)
+
+          .tab-panel#settings-tab-api
+            h4 API access
+            p.add-project-hint Generate an API key for machine clients (Cursor agents, scripts, curl). Send it as #[code Authorization: Bearer <key>] or #[code X-API-Key].
+            p.add-project-hint Base URL example: #[code http://172.16.0.200:8088/api/v1]
+            .api-key-status#api-key-status
+              p.add-project-hint No API key configured yet.
+            ul.settings-user-list#api-key-list
+            .setup-actions
+              button.btn.btn-primary#setting-api-key-generate(type='button') Generate API key
+              button.btn.btn-danger#setting-api-key-revoke-all(type='button') Revoke all keys
+            .api-key-created#api-key-created(hidden)
+              label.add-project-label Copy this key now — it will not be shown again
+              input#setting-api-key-value.add-project-input(type='text', readonly, autocomplete='off')
+              .setup-actions
+                button.btn.btn-secondary#setting-api-key-copy(type='button') Copy key
+                button.btn.btn-secondary#setting-api-key-copy-env(type='button') Copy .env line
+              p.add-project-hint Put it in your local #[code .env] (see #[code .env.example]):
+              pre.api-key-env-preview#api-key-env-preview
+            hr.settings-divider
+            h4 Useful endpoints
+            pre.api-endpoint-list
+              | GET  /api/v1/health
+              | GET  /api/v1/status
+              | GET  /api/v1/processes
+              | GET  /api/v1/processes/:pmId/logs?lines=100&stream=err
+              | POST /api/v1/processes/:pmId/actions   {"action":"restart"}
+              | GET  /api/v1/projects
+              | GET  /api/v1/logs/dashboard?lines=100
 
           .tab-panel#settings-tab-security
             h4 Change password
@@ -461,4 +491,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.6.10')
+  script(src='/js/app.js?v=0.6.14')

@@ -278,6 +278,31 @@
         return
       }
 
+      if (target.id === 'setting-api-key-generate') {
+        generateApiKey()
+        return
+      }
+
+      if (target.id === 'setting-api-key-revoke-all') {
+        revokeAllApiKeys()
+        return
+      }
+
+      if (target.id === 'setting-api-key-copy') {
+        copyApiKeyValue()
+        return
+      }
+
+      if (target.id === 'setting-api-key-copy-env') {
+        copyApiKeyEnvLine()
+        return
+      }
+
+      if (target.dataset.apiKeyRevoke) {
+        revokeApiKey(target.dataset.apiKeyRevoke)
+        return
+      }
+
       if (target.id === 'setting-2fa-begin') {
         begin2faSetup()
         return
@@ -1172,7 +1197,12 @@
 
   function isExcludedUpdatePath (relPath) {
     return String(relPath || '').replace(/\\/g, '/').split('/').some(function (part) {
-      return part && (UPDATE_EXCLUDE_RE.test(part) || /\.sqlite$/i.test(part))
+      return part && (
+        UPDATE_EXCLUDE_RE.test(part) ||
+        /\.sqlite$/i.test(part) ||
+        /\.db$/i.test(part) ||
+        /\.db-(journal|wal|shm)$/i.test(part)
+      )
     })
   }
 
@@ -1353,8 +1383,10 @@
     var paths = selection.paths || []
     var chain = Promise.resolve([])
     files.forEach(function (file, index) {
+      var rel = paths[index] || file.name || ('file-' + index)
+      if (isExcludedUpdatePath(rel)) return
       chain = chain.then(function (entries) {
-        return fileToSnapshotEntry(file, paths[index] || file.name || ('file-' + index)).then(function (entry) {
+        return fileToSnapshotEntry(file, rel).then(function (entry) {
           entries.push(entry)
           return entries
         })
@@ -1365,8 +1397,10 @@
         folderName: selection.folderName || 'project',
         displayPath: selection.displayPath || selection.folderName || 'project',
         mode: selection.mode || 'files',
-        totalBytes: selection.totalBytes || 0,
-        paths: paths.slice(),
+        totalBytes: entries.reduce(function (sum, entry) {
+          return sum + ((entry.buffer && entry.buffer.byteLength) || 0)
+        }, 0),
+        paths: entries.map(function (entry) { return entry.relPath }),
         entries: entries,
         savedAt: Date.now()
       }
@@ -1375,26 +1409,206 @@
 
   function snapshotToSelection (snapshot) {
     if (!snapshot || !(snapshot.entries || []).length) return null
-    var files = snapshot.entries.map(function (entry) {
-      return new File([entry.buffer], entry.name || 'file', {
+    var files = []
+    var paths = []
+    snapshot.entries.forEach(function (entry) {
+      if (!entry || entry.buffer == null) return
+      var bytes = entry.buffer instanceof ArrayBuffer
+        ? new Uint8Array(entry.buffer)
+        : (ArrayBuffer.isView(entry.buffer)
+          ? new Uint8Array(entry.buffer.buffer, entry.buffer.byteOffset, entry.buffer.byteLength)
+          : null)
+      if (!bytes || !bytes.byteLength) return
+      var rel = entry.relPath || entry.name || 'file'
+      if (isExcludedUpdatePath(rel)) return
+      files.push(new File([bytes], entry.name || 'file', {
         type: entry.type || 'application/octet-stream',
         lastModified: entry.lastModified || Date.now()
-      })
+      }))
+      paths.push(rel)
     })
-    var paths = snapshot.paths && snapshot.paths.length
-      ? snapshot.paths.slice()
-      : snapshot.entries.map(function (entry) { return entry.relPath || entry.name })
+    if (!files.length) return null
     return {
       folderName: snapshot.folderName || 'project',
       displayPath: snapshot.displayPath || snapshot.folderName || 'project',
       dirHandle: null,
-      mode: snapshot.mode || 'files',
+      mode: 'files',
       files: files,
       paths: paths,
-      totalBytes: snapshot.totalBytes || 0,
+      totalBytes: files.reduce(function (sum, file) { return sum + (file.size || 0) }, 0),
       archive: null,
       fromSnapshot: true
     }
+  }
+
+  function crc32Table () {
+    if (crc32Table.cache) return crc32Table.cache
+    var table = new Uint32Array(256)
+    for (var i = 0; i < 256; i++) {
+      var c = i
+      for (var k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1)
+      }
+      table[i] = c >>> 0
+    }
+    crc32Table.cache = table
+    return table
+  }
+
+  function crc32 (bytes) {
+    var table = crc32Table()
+    var crc = 0xffffffff
+    for (var i = 0; i < bytes.length; i++) {
+      crc = table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
+    }
+    return (crc ^ 0xffffffff) >>> 0
+  }
+
+  function u16 (value) {
+    return new Uint8Array([value & 0xff, (value >>> 8) & 0xff])
+  }
+
+  function u32 (value) {
+    return new Uint8Array([
+      value & 0xff,
+      (value >>> 8) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 24) & 0xff
+    ])
+  }
+
+  function encodeZipPath (relPath) {
+    var cleaned = String(relPath || 'file').replace(/\\/g, '/').replace(/^\/+/, '')
+    var bytes = []
+    for (var i = 0; i < cleaned.length; i++) {
+      var code = cleaned.charCodeAt(i)
+      bytes.push(code < 0x80 ? code : 0x5f)
+    }
+    return new Uint8Array(bytes)
+  }
+
+  function buildStoredZipFile (files, paths, zipName) {
+    var localParts = []
+    var centralParts = []
+    var offset = 0
+    var count = 0
+
+    function appendParts (target, chunks) {
+      for (var i = 0; i < chunks.length; i++) target.push(chunks[i])
+    }
+
+    var chain = Promise.resolve()
+    files.forEach(function (file, index) {
+      chain = chain.then(function () {
+        return file.arrayBuffer().then(function (buffer) {
+          var data = new Uint8Array(buffer)
+          var nameBytes = encodeZipPath(paths[index] || file.name || ('file-' + index))
+          var checksum = crc32(data)
+          var localHeader = []
+          appendParts(localHeader, [
+            u32(0x04034b50),
+            u16(20),
+            u16(0),
+            u16(0),
+            u16(0),
+            u16(0),
+            u32(checksum),
+            u32(data.length),
+            u32(data.length),
+            u16(nameBytes.length),
+            u16(0),
+            nameBytes,
+            data
+          ])
+          var localSize = 30 + nameBytes.length + data.length
+          appendParts(localParts, localHeader)
+
+          var central = []
+          appendParts(central, [
+            u32(0x02014b50),
+            u16(20),
+            u16(20),
+            u16(0),
+            u16(0),
+            u16(0),
+            u16(0),
+            u32(checksum),
+            u32(data.length),
+            u32(data.length),
+            u16(nameBytes.length),
+            u16(0),
+            u16(0),
+            u16(0),
+            u16(0),
+            u32(0),
+            u32(offset),
+            nameBytes
+          ])
+          appendParts(centralParts, central)
+          offset += localSize
+          count += 1
+        })
+      })
+    })
+
+    return chain.then(function () {
+      if (!count) {
+        throw new Error('No files available to package for upload')
+      }
+      var centralSize = centralParts.reduce(function (sum, part) {
+        return sum + part.byteLength
+      }, 0)
+      var end = [
+        u32(0x06054b50),
+        u16(0),
+        u16(0),
+        u16(count),
+        u16(count),
+        u32(centralSize),
+        u32(offset),
+        u16(0)
+      ]
+      var blob = new Blob(localParts.concat(centralParts, end), {
+        type: 'application/zip'
+      })
+      return new File([blob], zipName || 'project-update.zip', {
+        type: 'application/zip'
+      })
+    })
+  }
+
+  function selectionForTransport (selection, zipName) {
+    if (!selection) return Promise.reject(new Error('Nothing to upload'))
+    if (selection.mode === 'zip' || selection.archive) {
+      return Promise.resolve(selection)
+    }
+    var files = selection.files || []
+    var paths = selection.paths || []
+    if (!files.length) {
+      return Promise.reject(new Error('No files selected for upload'))
+    }
+
+    // Snapshot/reused uploads are more reliable as a single zip (one multipart
+    // part) than hundreds of reconstructed File blobs.
+    var shouldZip = !!selection.fromSnapshot || files.length > 40
+    if (!shouldZip) {
+      return Promise.resolve(selection)
+    }
+
+    return buildStoredZipFile(files, paths, zipName).then(function (zipFile) {
+      return {
+        folderName: selection.folderName,
+        displayPath: selection.displayPath,
+        dirHandle: selection.dirHandle || null,
+        mode: 'zip',
+        archive: zipFile,
+        files: [zipFile],
+        paths: [],
+        totalBytes: zipFile.size,
+        servicePort: selection.servicePort,
+        fromSnapshot: selection.fromSnapshot
+      }
+    })
   }
 
   function saveUploadSourceSnapshot (sourceKey, selection) {
@@ -2049,92 +2263,115 @@
       return
     }
 
-    var form = new FormData()
-    if (ctx.servicePort) {
-      form.append('servicePort', ctx.servicePort)
-    }
-    var isZip = selection && (selection.mode === 'zip' || selection.archive)
-    var totalBytes = (selection && selection.totalBytes) || 0
-    var labelCount
-    if (isZip) {
-      var zipFile = selection.archive || selection.files[0]
-      form.append('archive', zipFile, zipFile.name || 'project.zip')
-      labelCount = '1 ZIP'
-    } else {
-      form.append('paths', JSON.stringify(selection.paths || []))
-      ;(selection.files || []).forEach(function (file) {
-        form.append('file', file, file.name)
-      })
-      labelCount = (selection.files || []).length + ' files'
-    }
-
     setProjectActionsLocked(true)
     showUpdateProgressModal(
       'Updating ' + (ctx.pathHint ? ctx.pathHint.split('/').pop() : 'project'),
-      'Uploading ' + labelCount + ' (' + formatBytes(totalBytes) + ')'
+      'Preparing upload…'
     )
 
-    var xhr = new XMLHttpRequest()
-    xhr.open('POST', url)
-    xhr.withCredentials = true
-
-    xhr.upload.onprogress = function (event) {
-      if (!event.lengthComputable) {
-        setUpdateProgress(0, 'Uploading…')
-        return
+    selectionForTransport(selection, 'project-update.zip').then(function (ready) {
+      var form = new FormData()
+      if (ctx.servicePort) {
+        form.append('servicePort', ctx.servicePort)
       }
-      var pct = (event.loaded / event.total) * 90
-      setUpdateProgress(pct, formatBytes(event.loaded) + ' / ' + formatBytes(event.total))
-    }
+      var isZip = ready && (ready.mode === 'zip' || ready.archive)
+      var totalBytes = (ready && ready.totalBytes) || 0
+      var labelCount
+      if (isZip) {
+        var zipFile = ready.archive || ready.files[0]
+        form.append('archive', zipFile, zipFile.name || 'project.zip')
+        labelCount = '1 ZIP'
+      } else {
+        form.append('paths', JSON.stringify(ready.paths || []))
+        ;(ready.files || []).forEach(function (file, index) {
+          var rel = (ready.paths && ready.paths[index]) || file.name
+          form.append('file', file, rel)
+        })
+        labelCount = (ready.files || []).length + ' files'
+      }
 
-    xhr.upload.onload = function () {
-      setUpdateProgress(92, 'Upload complete — installing packages, then restarting…')
-      var subEl = document.getElementById('update-progress-subtitle')
-      if (subEl) subEl.textContent = 'Running pnpm/npm install for new dependencies…'
-    }
+      setUpdateProgress(0, 'Uploading ' + labelCount + ' (' + formatBytes(totalBytes) + ')')
 
-    xhr.onerror = function () {
+      var xhr = new XMLHttpRequest()
+      var uploadFinished = false
+      xhr.open('POST', url)
+      xhr.withCredentials = true
+      xhr.timeout = 0
+
+      xhr.upload.onprogress = function (event) {
+        if (!event.lengthComputable) {
+          setUpdateProgress(0, 'Uploading…')
+          return
+        }
+        var pct = (event.loaded / event.total) * 90
+        setUpdateProgress(pct, formatBytes(event.loaded) + ' / ' + formatBytes(event.total))
+      }
+
+      xhr.upload.onload = function () {
+        uploadFinished = true
+        setUpdateProgress(92, 'Upload complete — installing packages, then restarting…')
+        var subEl = document.getElementById('update-progress-subtitle')
+        if (subEl) subEl.textContent = 'Running pnpm/npm install for new dependencies…'
+      }
+
+      xhr.onerror = function () {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast(
+          uploadFinished
+            ? 'Connection lost while installing on the NAS. Check Logs / process status.'
+            : 'Upload failed (network error). Try Browse folder again, or upload a smaller folder.',
+          'error'
+        )
+      }
+
+      xhr.ontimeout = function () {
+        setProjectActionsLocked(false)
+        hideUpdateProgressModal()
+        toast('Upload timed out', 'error')
+      }
+
+      xhr.onload = function () {
+        var body = null
+        try {
+          body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+        } catch (err) {
+          setProjectActionsLocked(false)
+          hideUpdateProgressModal()
+          toast('Server returned non-JSON (HTTP ' + xhr.status + '). Restart pm2-gui if you just deployed.', 'error')
+          return
+        }
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          setProjectActionsLocked(false)
+          hideUpdateProgressModal()
+          toast((body && body.error) || 'Update failed', 'error')
+          return
+        }
+
+        setUpdateProgress(100, 'Done')
+        var written = 0
+        ;(body.steps || []).forEach(function (step) {
+          if (step.step === 'merge') written = step.filesWritten || 0
+        })
+
+        setTimeout(function () {
+          setProjectActionsLocked(false)
+          hideUpdateProgressModal()
+          toast('Updated ' + written + ' file(s) and restarted ' + (ctx.pathHint || 'app'))
+          if (state.sockets.process && state.sockets.process.connected) {
+            state.sockets.process.emit(EVENTS.PULL_PROCESSES)
+          }
+          loadSavedProjects()
+        }, 400)
+      }
+
+      xhr.send(form)
+    }).catch(function (err) {
       setProjectActionsLocked(false)
       hideUpdateProgressModal()
-      toast('Upload failed (network error)', 'error')
-    }
-
-    xhr.onload = function () {
-      var body = null
-      try {
-        body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
-      } catch (err) {
-        setProjectActionsLocked(false)
-        hideUpdateProgressModal()
-        toast('Server returned non-JSON (HTTP ' + xhr.status + '). Restart pm2-gui if you just deployed.', 'error')
-        return
-      }
-
-      if (xhr.status < 200 || xhr.status >= 300) {
-        setProjectActionsLocked(false)
-        hideUpdateProgressModal()
-        toast((body && body.error) || 'Update failed', 'error')
-        return
-      }
-
-      setUpdateProgress(100, 'Done')
-      var written = 0
-      ;(body.steps || []).forEach(function (step) {
-        if (step.step === 'merge') written = step.filesWritten || 0
-      })
-
-      setTimeout(function () {
-        setProjectActionsLocked(false)
-        hideUpdateProgressModal()
-        toast('Updated ' + written + ' file(s) and restarted ' + (ctx.pathHint || 'app'))
-        if (state.sockets.process && state.sockets.process.connected) {
-          state.sockets.process.emit(EVENTS.PULL_PROCESSES)
-        }
-        loadSavedProjects()
-      }, 400)
-    }
-
-    xhr.send(form)
+      toast((err && err.message) || 'Could not prepare upload', 'error')
+    })
   }
 
   function getProjectsRoot () {
@@ -2916,6 +3153,8 @@
       }).join('') || '<li><span>No users yet</span></li>'
     }
 
+    renderApiKeyPanel(data.api)
+
     window.GUI.publicHost = s.public_host || ''
     window.GUI.publicProtocol = s.public_protocol || 'http'
     window.GUI.projectsRoot = s.projects_root || ''
@@ -2923,6 +3162,140 @@
       state.startup = data.startup
     }
     renderStartupPanel(state.startup)
+  }
+
+  function renderApiKeyPanel (api) {
+    var statusEl = document.getElementById('api-key-status')
+    var listEl = document.getElementById('api-key-list')
+    api = api || { configured: false, keys: [] }
+
+    if (statusEl) {
+      if (api.configured && api.keys && api.keys.length) {
+        statusEl.innerHTML = '<p class="add-project-hint">' +
+          escapeHtml(String(api.keys.length)) + ' active key' + (api.keys.length === 1 ? '' : 's') +
+          '. Auth header: <code>' + escapeHtml(api.header || 'Authorization: Bearer <key>') + '</code></p>'
+      } else {
+        statusEl.innerHTML = '<p class="add-project-hint">No API key configured yet.</p>'
+      }
+    }
+
+    if (listEl) {
+      listEl.innerHTML = (api.keys || []).map(function (key) {
+        return '<li><span><strong>' + escapeHtml(key.name || 'default') + '</strong>' +
+          ' · <code>' + escapeHtml(key.prefix || '') + '</code>' +
+          (key.createdAt ? ' · created ' + escapeHtml(key.createdAt.slice(0, 10)) : '') +
+          (key.lastUsedAt ? ' · last used ' + escapeHtml(key.lastUsedAt.slice(0, 10)) : '') +
+          '</span><button type="button" class="btn btn-danger btn-sm" data-api-key-revoke="' +
+          escapeHtml(key.id) + '">Revoke</button></li>'
+      }).join('') || ''
+    }
+  }
+
+  function showCreatedApiKey (created) {
+    var panel = document.getElementById('api-key-created')
+    var input = document.getElementById('setting-api-key-value')
+    var preview = document.getElementById('api-key-env-preview')
+    if (!created || !created.apiKey) return
+    if (panel) panel.hidden = false
+    if (input) input.value = created.apiKey
+    if (preview) preview.textContent = created.envExample || ('PM2_GUI_API_KEY=' + created.apiKey)
+  }
+
+  function generateApiKey () {
+    var btn = document.getElementById('setting-api-key-generate')
+    if (btn) btn.disabled = true
+    fetch('/settings_api/api_key/generate', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ name: 'default' })
+    })
+      .then(parseApiResponse)
+      .then(function (result) {
+        if (!result.ok) throw new Error(result.body.error || 'Could not generate API key')
+        renderApiKeyPanel(result.body.api)
+        showCreatedApiKey(result.body.created)
+        toast('API key generated — copy it now')
+      })
+      .catch(function (err) {
+        toast(err.message, 'error')
+      })
+      .finally(function () {
+        if (btn) btn.disabled = false
+      })
+  }
+
+  function revokeApiKey (id) {
+    if (!id) return
+    showConfirmModal({
+      title: 'Revoke API key',
+      message: 'Clients using this key will immediately lose API access.'
+    }).then(function (ok) {
+      if (!ok) return
+      return fetch('/settings_api/api_key/revoke', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ id: id })
+      })
+        .then(parseApiResponse)
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'Could not revoke key')
+          renderApiKeyPanel(result.body.api)
+          var panel = document.getElementById('api-key-created')
+          if (panel) panel.hidden = true
+          toast('API key revoked')
+        })
+    }).catch(function (err) {
+      toast(err.message, 'error')
+    })
+  }
+
+  function revokeAllApiKeys () {
+    showConfirmModal({
+      title: 'Revoke all API keys',
+      message: 'All machine clients will lose API access until you generate a new key.'
+    }).then(function (ok) {
+      if (!ok) return
+      return fetch('/settings_api/api_key/revoke', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ all: true })
+      })
+        .then(parseApiResponse)
+        .then(function (result) {
+          if (!result.ok) throw new Error(result.body.error || 'Could not revoke keys')
+          renderApiKeyPanel(result.body.api)
+          var panel = document.getElementById('api-key-created')
+          if (panel) panel.hidden = true
+          toast('All API keys revoked')
+        })
+    }).catch(function (err) {
+      toast(err.message, 'error')
+    })
+  }
+
+  function copyApiKeyValue () {
+    var input = document.getElementById('setting-api-key-value')
+    var value = input && input.value
+    if (!value) {
+      toast('Generate a key first', 'error')
+      return
+    }
+    copyToClipboard(value, 'API key copied')
+  }
+
+  function copyApiKeyEnvLine () {
+    var input = document.getElementById('setting-api-key-value')
+    var preview = document.getElementById('api-key-env-preview')
+    var line = (preview && preview.textContent) ||
+      (input && input.value ? 'PM2_GUI_API_KEY=' + input.value : '')
+    if (!line) {
+      toast('Generate a key first', 'error')
+      return
+    }
+    copyToClipboard(line, '.env line copied')
   }
 
   function renderStartupPanel (startup) {
@@ -3096,29 +3469,47 @@
       toast('Nothing to copy', 'error')
       return
     }
+    copyToClipboard(text, 'Log copied')
+  }
+
+  function copyToClipboard (text, successMessage) {
+    successMessage = successMessage || 'Copied'
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () {
-        toast('Log copied')
+        toast(successMessage)
       }).catch(function () {
-        fallbackCopyText(text)
+        fallbackCopyText(text, successMessage)
       })
       return
     }
-    fallbackCopyText(text)
+    fallbackCopyText(text, successMessage)
   }
 
-  function fallbackCopyText (text) {
+  function fallbackCopyText (text, successMessage) {
     var ta = document.createElement('textarea')
     ta.value = text
+    ta.setAttribute('readonly', '')
     ta.style.position = 'fixed'
-    ta.style.left = '-9999px'
+    ta.style.top = '0'
+    ta.style.left = '0'
+    ta.style.width = '1px'
+    ta.style.height = '1px'
+    ta.style.padding = '0'
+    ta.style.border = 'none'
+    ta.style.outline = 'none'
+    ta.style.boxShadow = 'none'
+    ta.style.background = 'transparent'
+    ta.style.opacity = '0'
     document.body.appendChild(ta)
+    ta.focus()
     ta.select()
+    ta.setSelectionRange(0, text.length)
     try {
-      document.execCommand('copy')
-      toast('Log copied')
+      var ok = document.execCommand('copy')
+      if (ok) toast(successMessage || 'Copied')
+      else toast('Could not copy — select the key and copy manually', 'error')
     } catch (err) {
-      toast('Could not copy', 'error')
+      toast('Could not copy — select the key and copy manually', 'error')
     }
     document.body.removeChild(ta)
   }

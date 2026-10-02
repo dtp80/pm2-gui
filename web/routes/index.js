@@ -221,6 +221,7 @@ action('get', 'settings_api', function settings_api_get (req, res) { // eslint-d
         user: currentUser(req),
         dataDir: projectsStore.getDataDir(),
         dbPath: db.getDbPath(),
+        api: require('../../lib/api-keys').getStatus(),
         startup: bootErr ? { error: bootErr.message } : startup
       })
     })
@@ -258,7 +259,8 @@ function handleSettingsUpdate (req, res) {
       users: authService.listUsers(),
       user: currentUser(req),
       dataDir: projectsStore.getDataDir(),
-      dbPath: db.getDbPath()
+      dbPath: db.getDbPath(),
+      api: require('../../lib/api-keys').getStatus()
     })
   } catch (err) {
     console.error('[settings] update failed:', err)
@@ -269,6 +271,45 @@ function handleSettingsUpdate (req, res) {
 action('post', 'settings_api', handleSettingsUpdate)
 action('put', 'settings_api', handleSettingsUpdate)
 action('post', 'settings_api/save', handleSettingsUpdate)
+
+action('post', 'settings_api/api_key/generate', function settings_api_key_generate (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var apiKeys = require('../../lib/api-keys')
+    var body = req.body || {}
+    var created = apiKeys.createKey(body.name || 'default')
+    res.json({
+      status: 'ok',
+      api: apiKeys.getStatus(),
+      created: created,
+      message: 'Copy this key now — it will not be shown again.'
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+action('post', 'settings_api/api_key/revoke', function settings_api_key_revoke (req, res) { // eslint-disable-line camelcase
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Authentication required' })
+  }
+  try {
+    var apiKeys = require('../../lib/api-keys')
+    var body = req.body || {}
+    if (body.all) {
+      apiKeys.revokeAll()
+    } else if (body.id) {
+      apiKeys.revokeKey(body.id)
+    } else {
+      return res.status(400).json({ error: 'Provide id or all=true' })
+    }
+    res.json({ status: 'ok', api: apiKeys.getStatus() })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
 
 action('get', 'settings_api/debug_log', function settings_debug_log_api (req, res) { // eslint-disable-line camelcase
   if (!authService.isAuthenticated(req)) {
@@ -622,6 +663,9 @@ action('post', 'projects_api/start_all', function projects_start_all_api (req, r
 })
 
 function handleProjectUpdateUpload (req, res, target) {
+  // Install + restart can take several minutes on Synology.
+  try { req.setTimeout(0) } catch (err) {}
+  try { res.setTimeout(0) } catch (err) {}
   ensureUpdateTempDir()
   updateUpload.any()(req, res, function (err) {
     if (err) {
