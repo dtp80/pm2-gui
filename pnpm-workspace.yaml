@@ -3,6 +3,8 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - "@types/node"
 overrides:
+  basic-ftp: ">=6.2.1"
+  engine.io: ">=6.6.10"
   ip-address: ">=10.5.1"
   js-yaml: "^4.3.2"
   qs: ">=6.16.0"

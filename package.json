@@ -1,6 +1,6 @@
 {
   "name": "pm2-gui",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "An elegant web & terminal interface for PM2.",
   "main": "./pm2-gui.js",
   "scripts": {
