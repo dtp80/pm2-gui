@@ -1021,6 +1021,22 @@ body {
   flex-shrink: 0;
 }
 
+.folder-pick-port {
+  margin: 0 0 14px;
+}
+
+.folder-pick-port[hidden] {
+  display: none;
+}
+
+.folder-pick-port .add-project-label {
+  margin-top: 0;
+}
+
+.folder-pick-port .add-project-hint {
+  margin-bottom: 0;
+}
+
 .folder-dropzone {
   display: flex;
   flex-direction: column;

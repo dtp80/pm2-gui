@@ -53,7 +53,9 @@
     promptResolver: null,
     folderPickResolver: null,
     folderPickBound: false,
-    folderPickSourceKey: null
+    folderPickSourceKey: null,
+    folderPickAskPort: false,
+    uploadSelectionCache: {}
   }
 
   var els = {}
@@ -1164,7 +1166,9 @@
   var MAX_UPLOAD_BYTES = 200 * 1024 * 1024
   var UPLOAD_SOURCE_LS_KEY = 'pm2gui.uploadSources.v1'
   var UPLOAD_SOURCE_IDB_NAME = 'pm2gui-upload-sources'
-  var UPLOAD_SOURCE_IDB_STORE = 'handles'
+  var UPLOAD_SOURCE_IDB_VERSION = 2
+  var UPLOAD_SOURCE_HANDLE_STORE = 'handles'
+  var UPLOAD_SOURCE_SNAPSHOT_STORE = 'snapshots'
 
   function isExcludedUpdatePath (relPath) {
     return String(relPath || '').replace(/\\/g, '/').split('/').some(function (part) {
@@ -1248,11 +1252,14 @@
         reject(new Error('IndexedDB unavailable'))
         return
       }
-      var req = window.indexedDB.open(UPLOAD_SOURCE_IDB_NAME, 1)
+      var req = window.indexedDB.open(UPLOAD_SOURCE_IDB_NAME, UPLOAD_SOURCE_IDB_VERSION)
       req.onupgradeneeded = function () {
         var db = req.result
-        if (!db.objectStoreNames.contains(UPLOAD_SOURCE_IDB_STORE)) {
-          db.createObjectStore(UPLOAD_SOURCE_IDB_STORE)
+        if (!db.objectStoreNames.contains(UPLOAD_SOURCE_HANDLE_STORE)) {
+          db.createObjectStore(UPLOAD_SOURCE_HANDLE_STORE)
+        }
+        if (!db.objectStoreNames.contains(UPLOAD_SOURCE_SNAPSHOT_STORE)) {
+          db.createObjectStore(UPLOAD_SOURCE_SNAPSHOT_STORE)
         }
       }
       req.onsuccess = function () { resolve(req.result) }
@@ -1260,16 +1267,21 @@
     })
   }
 
-  function idbStoreRequest (mode, fn) {
+  function idbStoreRequest (storeName, mode, fn) {
     return openUploadSourceDb().then(function (db) {
       return new Promise(function (resolve, reject) {
-        var tx = db.transaction(UPLOAD_SOURCE_IDB_STORE, mode)
-        var store = tx.objectStore(UPLOAD_SOURCE_IDB_STORE)
+        if (!db.objectStoreNames.contains(storeName)) {
+          try { db.close() } catch (closeErr) {}
+          reject(new Error('IndexedDB store missing: ' + storeName))
+          return
+        }
+        var tx = db.transaction(storeName, mode)
+        var store = tx.objectStore(storeName)
         var req
         try {
           req = fn(store)
         } catch (err) {
-          db.close()
+          try { db.close() } catch (closeErr) {}
           reject(err)
           return
         }
@@ -1282,9 +1294,7 @@
           else resolve(value)
         }
         if (req && typeof req.onsuccess !== 'undefined') {
-          req.onsuccess = function () {
-            // Prefer request result; transaction may still be open.
-          }
+          req.onsuccess = function () {}
           req.onerror = function () {
             finish(req.error || new Error('IndexedDB request failed'))
           }
@@ -1307,27 +1317,120 @@
     if (!dirHandle) {
       return clearUploadSourceHandle(key)
     }
-    return idbStoreRequest('readwrite', function (store) {
+    return idbStoreRequest(UPLOAD_SOURCE_HANDLE_STORE, 'readwrite', function (store) {
       return store.put(dirHandle, key)
     }).catch(function () { return null })
   }
 
   function clearUploadSourceHandle (sourceKey) {
     var key = normalizeUploadSourceKey(sourceKey)
-    return idbStoreRequest('readwrite', function (store) {
+    return idbStoreRequest(UPLOAD_SOURCE_HANDLE_STORE, 'readwrite', function (store) {
       return store.delete(key)
     }).catch(function () { return null })
   }
 
   function loadUploadSourceHandle (sourceKey) {
     var key = normalizeUploadSourceKey(sourceKey)
-    return idbStoreRequest('readonly', function (store) {
+    return idbStoreRequest(UPLOAD_SOURCE_HANDLE_STORE, 'readonly', function (store) {
       return store.get(key)
     }).catch(function () { return null })
   }
 
+  function fileToSnapshotEntry (file, relPath) {
+    return file.arrayBuffer().then(function (buffer) {
+      return {
+        relPath: relPath,
+        name: file.name || 'file',
+        type: file.type || 'application/octet-stream',
+        lastModified: file.lastModified || Date.now(),
+        buffer: buffer
+      }
+    })
+  }
+
+  function selectionToSnapshot (selection) {
+    var files = selection.files || []
+    var paths = selection.paths || []
+    var chain = Promise.resolve([])
+    files.forEach(function (file, index) {
+      chain = chain.then(function (entries) {
+        return fileToSnapshotEntry(file, paths[index] || file.name || ('file-' + index)).then(function (entry) {
+          entries.push(entry)
+          return entries
+        })
+      })
+    })
+    return chain.then(function (entries) {
+      return {
+        folderName: selection.folderName || 'project',
+        displayPath: selection.displayPath || selection.folderName || 'project',
+        mode: selection.mode || 'files',
+        totalBytes: selection.totalBytes || 0,
+        paths: paths.slice(),
+        entries: entries,
+        savedAt: Date.now()
+      }
+    })
+  }
+
+  function snapshotToSelection (snapshot) {
+    if (!snapshot || !(snapshot.entries || []).length) return null
+    var files = snapshot.entries.map(function (entry) {
+      return new File([entry.buffer], entry.name || 'file', {
+        type: entry.type || 'application/octet-stream',
+        lastModified: entry.lastModified || Date.now()
+      })
+    })
+    var paths = snapshot.paths && snapshot.paths.length
+      ? snapshot.paths.slice()
+      : snapshot.entries.map(function (entry) { return entry.relPath || entry.name })
+    return {
+      folderName: snapshot.folderName || 'project',
+      displayPath: snapshot.displayPath || snapshot.folderName || 'project',
+      dirHandle: null,
+      mode: snapshot.mode || 'files',
+      files: files,
+      paths: paths,
+      totalBytes: snapshot.totalBytes || 0,
+      archive: null,
+      fromSnapshot: true
+    }
+  }
+
+  function saveUploadSourceSnapshot (sourceKey, selection) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    if (!selection || !(selection.files || []).length) {
+      return clearUploadSourceSnapshot(key)
+    }
+    return selectionToSnapshot(selection).then(function (snapshot) {
+      return idbStoreRequest(UPLOAD_SOURCE_SNAPSHOT_STORE, 'readwrite', function (store) {
+        return store.put(snapshot, key)
+      })
+    }).catch(function (err) {
+      console.warn('[upload-source] could not persist folder snapshot:', err && err.message)
+      return null
+    })
+  }
+
+  function clearUploadSourceSnapshot (sourceKey) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    return idbStoreRequest(UPLOAD_SOURCE_SNAPSHOT_STORE, 'readwrite', function (store) {
+      return store.delete(key)
+    }).catch(function () { return null })
+  }
+
+  function loadUploadSourceSnapshot (sourceKey) {
+    var key = normalizeUploadSourceKey(sourceKey)
+    return idbStoreRequest(UPLOAD_SOURCE_SNAPSHOT_STORE, 'readonly', function (store) {
+      return store.get(key)
+    }).then(function (snapshot) {
+      return snapshotToSelection(snapshot)
+    }).catch(function () { return null })
+  }
+
   function rememberUploadSource (sourceKey, selection) {
-    if (!sourceKey || !selection) return
+    if (!sourceKey || !selection) return Promise.resolve(null)
+    var key = normalizeUploadSourceKey(sourceKey)
     var folderName = selection.folderName || 'project'
     setUploadSourceMeta(sourceKey, {
       folderName: folderName,
@@ -1335,10 +1438,67 @@
     })
     if (selection.dirHandle) {
       saveUploadSourceHandle(sourceKey, selection.dirHandle)
-    } else {
+    } else if (!selection.fromSnapshot) {
       clearUploadSourceHandle(sourceKey)
     }
+    // Keep the last FileList in memory and IndexedDB so Upload can reuse it
+    // across reloads when the browser cannot reopen a directory handle
+    // (common on plain HTTP LAN dashboards).
+    state.uploadSelectionCache[key] = {
+      folderName: selection.folderName,
+      displayPath: selection.displayPath || selection.folderName,
+      dirHandle: selection.dirHandle || null,
+      mode: selection.mode || 'files',
+      files: selection.files || [],
+      paths: selection.paths || [],
+      totalBytes: selection.totalBytes || 0,
+      archive: selection.archive || null
+    }
     refreshFolderLastSourceUi(sourceKey)
+    if (selection.fromSnapshot) {
+      return Promise.resolve(null)
+    }
+    return saveUploadSourceSnapshot(sourceKey, selection)
+  }
+
+  function finishFolderPickResolve (selection) {
+    var modal = document.getElementById('folder-pick-modal')
+    if (modal) modal.hidden = true
+    var status = document.getElementById('folder-dropzone-status')
+    if (status) status.textContent = ''
+    var dropzone = document.getElementById('folder-dropzone')
+    if (dropzone) dropzone.classList.remove('is-dragover')
+    var resolver = state.folderPickResolver
+    state.folderPickResolver = null
+    state.folderPickAskPort = false
+    if (resolver) resolver(selection || null)
+  }
+
+  function resolveFolderPick (selection) {
+    if (!selection) {
+      finishFolderPickResolve(null)
+      return Promise.resolve(null)
+    }
+
+    attachFolderPickPort(selection)
+    var sourceKey = state.folderPickSourceKey
+    if (!sourceKey) {
+      finishFolderPickResolve(selection)
+      return Promise.resolve(selection)
+    }
+
+    if (!selection.fromSnapshot) {
+      setFolderPickStatus('Saving folder for next Upload…')
+    }
+
+    return Promise.resolve(rememberUploadSource(sourceKey, selection)).then(function () {
+      finishFolderPickResolve(selection)
+      return selection
+    }).catch(function () {
+      // Still continue the upload even if persistence fails.
+      finishFolderPickResolve(selection)
+      return selection
+    })
   }
 
   function refreshFolderLastSourceUi (sourceKey) {
@@ -1354,6 +1514,49 @@
     pathEl.textContent = meta.displayPath || meta.folderName
     pathEl.title = meta.displayPath || meta.folderName
     wrap.hidden = false
+  }
+
+  function configureFolderPickPortUi (options) {
+    options = options || {}
+    var wrap = document.getElementById('folder-pick-port-wrap')
+    var input = document.getElementById('folder-pick-port')
+    var hint = document.getElementById('folder-pick-port-hint')
+    state.folderPickAskPort = !!options.askPort
+    if (!wrap || !input) return
+    if (!options.askPort) {
+      wrap.hidden = true
+      input.value = ''
+      return
+    }
+    wrap.hidden = false
+    input.value = ''
+    var current = options.currentPort ? String(options.currentPort) : ''
+    if (options.portPlaceholder) {
+      input.placeholder = options.portPlaceholder
+    } else {
+      input.placeholder = current
+        ? ('Leave blank to keep ' + current)
+        : 'e.g. 3044'
+    }
+    if (hint) {
+      hint.textContent = options.portHint || (
+        current
+          ? ('Leave blank to keep port ' + current + '. Enter a number only if you want to change it.')
+          : 'Leave blank to use the port already defined in the project. Enter a number only if you want to set one.'
+      )
+    }
+  }
+
+  function readFolderPickPortValue () {
+    if (!state.folderPickAskPort) return ''
+    var input = document.getElementById('folder-pick-port')
+    return input ? String(input.value || '').trim() : ''
+  }
+
+  function attachFolderPickPort (selection) {
+    if (!selection) return selection
+    selection.servicePort = readFolderPickPortValue()
+    return selection
   }
 
   function ensureDirectoryPermission (dirHandle) {
@@ -1378,44 +1581,81 @@
     })
   }
 
+  function cloneCachedSelection (cached) {
+    if (!cached || !(cached.files || []).length) return null
+    return {
+      folderName: cached.folderName || 'project',
+      displayPath: cached.displayPath || cached.folderName || 'project',
+      dirHandle: cached.dirHandle || null,
+      mode: cached.mode || 'files',
+      files: cached.files.slice(),
+      paths: (cached.paths || []).slice(),
+      totalBytes: cached.totalBytes || 0,
+      archive: cached.archive || null
+    }
+  }
+
   function uploadFromSavedFolderSource () {
     var sourceKey = state.folderPickSourceKey
-    if (!sourceKey) {
-      browseFolderFromPickModal()
+    var meta = getUploadSourceMeta(sourceKey)
+    if (!sourceKey || !meta) {
+      toast('No saved folder yet. Use Browse folder or drop a folder first.', 'error')
       return
     }
-    var meta = getUploadSourceMeta(sourceKey)
-    setFolderPickStatus(meta ? ('Reading ' + meta.folderName + '…') : 'Reading saved folder…')
+
+    setFolderPickStatus('Reading ' + meta.folderName + '…')
 
     loadUploadSourceHandle(sourceKey).then(function (dirHandle) {
-      if (!dirHandle) {
-        setFolderPickStatus(meta
-          ? 'Choose “' + meta.folderName + '” again (browser cannot reopen it automatically).'
-          : '')
-        browseFolderFromPickModal()
-        return null
-      }
+      if (!dirHandle) return null
       return ensureDirectoryPermission(dirHandle).then(function (granted) {
-        if (!granted) {
-          setFolderPickStatus('Permission needed — pick the folder again.')
-          browseFolderFromPickModal()
-          return null
-        }
+        if (!granted) return null
         return selectionFromDirHandle(dirHandle)
       })
     }).then(function (selection) {
-      if (!selection) return
-      rememberUploadSource(sourceKey, selection)
-      resolveFolderPick(selection)
+      if (selection) {
+        return resolveFolderPick(selection)
+      }
+
+      var cached = cloneCachedSelection(
+        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)]
+      )
+      if (cached) {
+        setFolderPickStatus('Using last selected files…')
+        return resolveFolderPick(cached)
+      }
+
+      setFolderPickStatus('Loading saved folder…')
+      return loadUploadSourceSnapshot(sourceKey).then(function (snapshotSelection) {
+        if (!snapshotSelection) {
+          setFolderPickStatus('')
+          toast(
+            'No saved files for “' + meta.folderName + '” yet. Use Browse folder or drop the folder once — Upload will remember it afterward.',
+            'error'
+          )
+          return null
+        }
+        setFolderPickStatus('Using saved folder “' + meta.folderName + '”…')
+        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)] = snapshotSelection
+        return resolveFolderPick(snapshotSelection)
+      })
     }).catch(function (err) {
       if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
         setFolderPickStatus('')
         return
       }
-      clearUploadSourceHandle(sourceKey)
-      toast((err && err.message) || 'Could not reopen saved folder — browse again.', 'error')
+      var cached = cloneCachedSelection(
+        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)]
+      )
+      if (cached) {
+        resolveFolderPick(cached)
+        return
+      }
       setFolderPickStatus('')
-      browseFolderFromPickModal()
+      toast(
+        (err && err.message) ||
+          ('Cannot reopen “' + meta.folderName + '”. Use Browse folder once to save it again.'),
+        'error'
+      )
     })
   }
 
@@ -1462,25 +1702,11 @@
       if (title) title.textContent = options.title || 'Choose project folder'
       if (message) message.textContent = options.message || ''
       if (status) status.textContent = ''
+      configureFolderPickPortUi(options)
       refreshFolderLastSourceUi(state.folderPickSourceKey)
       bindFolderDropzoneOnce()
       if (modal) modal.hidden = false
     })
-  }
-
-  function resolveFolderPick (selection) {
-    if (selection && state.folderPickSourceKey) {
-      rememberUploadSource(state.folderPickSourceKey, selection)
-    }
-    var modal = document.getElementById('folder-pick-modal')
-    if (modal) modal.hidden = true
-    var status = document.getElementById('folder-dropzone-status')
-    if (status) status.textContent = ''
-    var dropzone = document.getElementById('folder-dropzone')
-    if (dropzone) dropzone.classList.remove('is-dragover')
-    var resolver = state.folderPickResolver
-    state.folderPickResolver = null
-    if (resolver) resolver(selection || null)
   }
 
   function setFolderPickStatus (text) {
@@ -1523,29 +1749,54 @@
     var dt = event.dataTransfer
     if (!dt) return Promise.reject(new Error('Nothing was dropped'))
 
-    var dirEntry = null
-    if (dt.items && dt.items.length) {
+    var handlePromise = Promise.resolve(null)
+    if (dt.items && dt.items.length && typeof DataTransferItem !== 'undefined') {
       for (var i = 0; i < dt.items.length; i++) {
         var item = dt.items[i]
         if (!item || item.kind !== 'file') continue
-        var entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null
-        if (entry && entry.isDirectory) {
-          dirEntry = entry
+        if (typeof item.getAsFileSystemHandle === 'function') {
+          handlePromise = Promise.resolve(item.getAsFileSystemHandle()).then(function (handle) {
+            if (handle && handle.kind === 'directory') return handle
+            return null
+          }).catch(function () { return null })
           break
         }
       }
     }
 
-    if (!dirEntry) {
-      return Promise.reject(new Error('Drop a folder (not individual files)'))
-    }
+    return handlePromise.then(function (dirHandle) {
+      if (dirHandle) {
+        setFolderPickStatus('Reading ' + dirHandle.name + '…')
+        return selectionFromDirHandle(dirHandle).then(function (selection) {
+          setFolderPickStatus('Ready: ' + selection.files.length + ' files')
+          resolveFolderPick(selection)
+        })
+      }
 
-    setFolderPickStatus('Reading ' + dirEntry.name + '…')
-    var collected = []
-    return readDirectoryEntry(dirEntry, '', collected).then(function () {
-      var selection = prepareUploadSelection(collected, dirEntry.name, null)
-      setFolderPickStatus('Ready: ' + selection.files.length + ' files')
-      resolveFolderPick(selection)
+      var dirEntry = null
+      if (dt.items && dt.items.length) {
+        for (var j = 0; j < dt.items.length; j++) {
+          var dropItem = dt.items[j]
+          if (!dropItem || dropItem.kind !== 'file') continue
+          var entry = dropItem.webkitGetAsEntry ? dropItem.webkitGetAsEntry() : null
+          if (entry && entry.isDirectory) {
+            dirEntry = entry
+            break
+          }
+        }
+      }
+
+      if (!dirEntry) {
+        return Promise.reject(new Error('Drop a folder (not individual files)'))
+      }
+
+      setFolderPickStatus('Reading ' + dirEntry.name + '…')
+      var collected = []
+      return readDirectoryEntry(dirEntry, '', collected).then(function () {
+        var selection = prepareUploadSelection(collected, dirEntry.name, null)
+        setFolderPickStatus('Ready: ' + selection.files.length + ' files')
+        resolveFolderPick(selection)
+      })
     })
   }
 
@@ -1712,6 +1963,20 @@
       if (project) pathHint = project.path
     }
 
+    var currentPort = ''
+    if (opts.projectId) {
+      var proj = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
+      if (proj && proj.servicePort) currentPort = String(proj.servicePort)
+    } else if (opts.pmId != null) {
+      var proc = findProcessByPmId(opts.pmId)
+      var linked = findProjectForProcess(proc)
+      if (linked && linked.servicePort) currentPort = String(linked.servicePort)
+      else {
+        var envPort = resolveProcessPort(proc, linked)
+        if (envPort != null) currentPort = String(envPort)
+      }
+    }
+
     var message = pathHint
       ? ('Replace files in:\n' + pathHint + '\n\nDrop the folder from your laptop below, or browse.')
       : 'Drop the updated project folder below, or browse. Matching files on the NAS will be overwritten.'
@@ -1719,6 +1984,8 @@
     showFolderPickModal({
       title: 'Update project from laptop',
       message: message,
+      askPort: true,
+      currentPort: currentPort,
       sourceKey: resolveUploadSourceKey({
         projectId: opts.projectId,
         pmId: opts.pmId,
@@ -1726,39 +1993,13 @@
       })
     }).then(function (selection) {
       if (!selection) return
-      var currentPort = ''
-      if (opts.projectId) {
-        var proj = (state.savedProjects || []).find(function (p) { return p.id === opts.projectId })
-        if (proj && proj.servicePort) currentPort = String(proj.servicePort)
-      } else if (opts.pmId != null) {
-        var proc = findProcessByPmId(opts.pmId)
-        var linked = findProjectForProcess(proc)
-        if (linked && linked.servicePort) currentPort = String(linked.servicePort)
-        else {
-          var envPort = resolveProcessPort(proc, linked)
-          if (envPort != null) currentPort = String(envPort)
-        }
-      }
-      return showPromptModal({
-        title: 'Service port (optional)',
-        message:
-          'Leave blank to keep the current pm2-gui port' +
-          (currentPort ? ' (' + currentPort + ')' : '') +
-          ' and sync it into the uploaded files if they differ.\n\n' +
-          'Or enter a new port. Reserved/used ports (80, 443, 5000, 5001, pm2-gui, other apps) are rejected.',
-        inputType: 'number',
-        placeholder: currentPort || 'e.g. 3044',
-        defaultValue: ''
-      }).then(function (portValue) {
-        if (portValue === null) return
-        uploadProjectUpdate({
-          projectId: opts.projectId || null,
-          pmId: opts.pmId != null ? opts.pmId : null,
-          button: opts.button || null,
-          pathHint: pathHint,
-          servicePort: String(portValue || '').trim()
-        }, selection)
-      })
+      uploadProjectUpdate({
+        projectId: opts.projectId || null,
+        pmId: opts.pmId != null ? opts.pmId : null,
+        button: opts.button || null,
+        pathHint: pathHint,
+        servicePort: String(selection.servicePort || '').trim()
+      }, selection)
     }).catch(function (err) {
       toast(err.message || 'Could not read folder', 'error')
     })
@@ -1923,31 +2164,23 @@
       message: 'Uploads to ' + root + '/<folder-name>, then installs and starts with PM2.\n' +
         'If that folder already exists, it will be overwritten.\n\n' +
         'Drop the project folder below (recommended), or browse.',
-      sourceKey: 'create'
+      sourceKey: 'create',
+      askPort: true,
+      currentPort: '',
+      portPlaceholder: 'e.g. 3044',
+      portHint: 'Leave blank to use the port already defined in the project (.env / ecosystem). Enter a number only if you want to set one.'
     }).then(function (selection) {
       if (!selection) return
       var targetHint = root.replace(/\/$/, '') + '/' + selection.folderName
-      return showPromptModal({
-        title: 'Service port (optional)',
-        message:
-          'Uploading to ' + targetHint + '\n\n' +
-          'Leave blank to use the port already defined in the project (.env / ecosystem).\n' +
-          'If you set a port, project files will be updated to match. Reserved/used ports ' +
-          '(80, 443, 5000, 5001, pm2-gui, other apps) are rejected.',
-        inputType: 'number',
-        placeholder: 'e.g. 3044'
-      }).then(function (portValue) {
-        if (portValue === null) return
-        uploadCreateProject({
-          folderName: selection.folderName,
-          targetHint: targetHint,
-          servicePort: String(portValue || '').trim(),
-          mode: selection.mode,
-          archive: selection.archive || null,
-          files: selection.files,
-          paths: selection.paths,
-          totalBytes: selection.totalBytes
-        })
+      uploadCreateProject({
+        folderName: selection.folderName,
+        targetHint: targetHint,
+        servicePort: String(selection.servicePort || '').trim(),
+        mode: selection.mode,
+        archive: selection.archive || null,
+        files: selection.files,
+        paths: selection.paths,
+        totalBytes: selection.totalBytes
       })
     }).catch(function (err) {
       toast(err.message || 'Could not read folder', 'error')

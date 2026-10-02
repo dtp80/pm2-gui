@@ -141,6 +141,16 @@ block content
               span.folder-last-source-label Last used source
               code.folder-last-source-path#folder-last-source-path
             button.btn.btn-primary#folder-pick-upload-last(type='button') Upload
+          .folder-pick-port#folder-pick-port-wrap(hidden)
+            label.add-project-label(for='folder-pick-port') Port (optional)
+            input#folder-pick-port.add-project-input(
+              type='number',
+              min='1',
+              max='65535',
+              autocomplete='off',
+              placeholder='Leave blank to keep current port'
+            )
+            p.add-project-hint#folder-pick-port-hint Leave blank to keep the current port. Enter a number only if you want to change it.
           .folder-dropzone#folder-dropzone(tabindex='0')
             .folder-dropzone-title Drop a folder here
             p.folder-dropzone-hint Drag the project folder from your computer into this box.
@@ -451,4 +461,4 @@ block content
       user: !{JSON.stringify(user || null)}
     };
   script(src='/socket.io/socket.io.js')
-  script(src='/js/app.js?v=0.6.8')
+  script(src='/js/app.js?v=0.6.10')
