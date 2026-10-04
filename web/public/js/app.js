@@ -1206,6 +1206,99 @@
     })
   }
 
+  function isUnreadableFileError (err) {
+    if (!err) return false
+    var name = String(err.name || '')
+    var msg = String(err.message || '')
+    return name === 'NotReadableError' ||
+      name === 'NotFoundError' ||
+      /could not be read/i.test(msg) ||
+      /permission problems that have occurred after a reference/i.test(msg)
+  }
+
+  function friendlyFolderReadError (err, folderName) {
+    var label = folderName || 'that folder'
+    if (isUnreadableFileError(err) || (err && err.name === 'NotAllowedError')) {
+      return 'Browser lost access to “' + label +
+        '”. Use Browse folder once more, then Upload will remember it.'
+    }
+    return (err && err.message) || ('Could not read “' + label + '”')
+  }
+
+  function readFileArrayBufferViaReader (file, previousErr) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader()
+      reader.onload = function () { resolve(reader.result) }
+      reader.onerror = function () {
+        reject(reader.error || previousErr || new Error('Could not read file'))
+      }
+      try {
+        reader.readAsArrayBuffer(file)
+      } catch (err) {
+        reject(err)
+      }
+    })
+  }
+
+  function readFileArrayBuffer (file) {
+    if (!file) return Promise.reject(new Error('Missing file'))
+    if (typeof file.arrayBuffer === 'function') {
+      return Promise.resolve().then(function () {
+        return file.arrayBuffer()
+      }).catch(function (err) {
+        return readFileArrayBufferViaReader(file, err)
+      })
+    }
+    return readFileArrayBufferViaReader(file)
+  }
+
+  function cloneFileFromBuffer (buffer, file) {
+    return new File([buffer], (file && file.name) || 'file', {
+      type: (file && file.type) || 'application/octet-stream',
+      lastModified: (file && file.lastModified) || Date.now()
+    })
+  }
+
+  function materializeFile (file) {
+    return readFileArrayBuffer(file).then(function (buffer) {
+      return cloneFileFromBuffer(buffer, file)
+    })
+  }
+
+  function materializeSelection (selection) {
+    if (!selection) return Promise.reject(new Error('Nothing to upload'))
+    if (selection.fromSnapshot) return Promise.resolve(selection)
+    if (selection.archive) {
+      return materializeFile(selection.archive).then(function (archive) {
+        selection.archive = archive
+        selection.files = [archive]
+        selection.totalBytes = archive.size || 0
+        return selection
+      })
+    }
+    var files = selection.files || []
+    var paths = selection.paths || []
+    var chain = Promise.resolve([])
+    files.forEach(function (file, index) {
+      chain = chain.then(function (out) {
+        return materializeFile(file).then(function (copy) {
+          out.push(copy)
+          return out
+        }).catch(function (err) {
+          err.failedPath = paths[index] || (file && file.name) || 'file'
+          throw err
+        })
+      })
+    })
+    return chain.then(function (copies) {
+      selection.files = copies
+      selection.totalBytes = copies.reduce(function (sum, copy) {
+        return sum + ((copy && copy.size) || 0)
+      }, 0)
+      return selection
+    })
+  }
+
   function relativeUpdatePath (file) {
     var rel = (file.webkitRelativePath || file.name || '').replace(/\\/g, '/')
     var parts = rel.split('/').filter(Boolean)
@@ -1367,7 +1460,7 @@
   }
 
   function fileToSnapshotEntry (file, relPath) {
-    return file.arrayBuffer().then(function (buffer) {
+    return readFileArrayBuffer(file).then(function (buffer) {
       return {
         relPath: relPath,
         name: file.name || 'file',
@@ -1500,7 +1593,7 @@
     var chain = Promise.resolve()
     files.forEach(function (file, index) {
       chain = chain.then(function () {
-        return file.arrayBuffer().then(function (buffer) {
+        return readFileArrayBuffer(file).then(function (buffer) {
           var data = new Uint8Array(buffer)
           var nameBytes = encodeZipPath(paths[index] || file.name || ('file-' + index))
           var checksum = crc32(data)
@@ -1774,15 +1867,20 @@
   }
 
   function ensureDirectoryPermission (dirHandle) {
-    if (!dirHandle || typeof dirHandle.queryPermission !== 'function') {
-      return Promise.resolve(!!dirHandle)
+    if (!dirHandle) return Promise.resolve(false)
+    var canRequest = typeof dirHandle.requestPermission === 'function'
+    // Always re-request on the user click. Chrome can report "granted" for a
+    // persisted handle whose file descriptors are already dead.
+    if (canRequest) {
+      return dirHandle.requestPermission({ mode: 'read' }).then(function (status) {
+        return status === 'granted'
+      }).catch(function () { return false })
+    }
+    if (typeof dirHandle.queryPermission !== 'function') {
+      return Promise.resolve(true)
     }
     return dirHandle.queryPermission({ mode: 'read' }).then(function (status) {
-      if (status === 'granted') return true
-      if (typeof dirHandle.requestPermission !== 'function') return false
-      return dirHandle.requestPermission({ mode: 'read' }).then(function (next) {
-        return next === 'granted'
-      })
+      return status === 'granted'
     }).catch(function () { return false })
   }
 
@@ -1809,6 +1907,36 @@
     }
   }
 
+  function tryLiveHandleSelection (sourceKey) {
+    return loadUploadSourceHandle(sourceKey).then(function (dirHandle) {
+      if (!dirHandle) return null
+      return ensureDirectoryPermission(dirHandle).then(function (granted) {
+        if (!granted) return null
+        return selectionFromDirHandle(dirHandle)
+      })
+    }).then(function (selection) {
+      if (!selection) return null
+      return materializeSelection(selection).catch(function (err) {
+        console.warn('[upload-source] live folder unreadable:', err && err.message)
+        clearUploadSourceHandle(sourceKey)
+        return null
+      })
+    }).catch(function (err) {
+      if (err && err.name === 'AbortError') throw err
+      console.warn('[upload-source] live handle failed:', err && err.message)
+      clearUploadSourceHandle(sourceKey)
+      return null
+    })
+  }
+
+  function tryCachedSelection (sourceKey) {
+    var cached = cloneCachedSelection(
+      state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)]
+    )
+    if (!cached) return Promise.resolve(null)
+    return materializeSelection(cached).catch(function () { return null })
+  }
+
   function uploadFromSavedFolderSource () {
     var sourceKey = state.folderPickSourceKey
     var meta = getUploadSourceMeta(sourceKey)
@@ -1819,57 +1947,37 @@
 
     setFolderPickStatus('Reading ' + meta.folderName + '…')
 
-    loadUploadSourceHandle(sourceKey).then(function (dirHandle) {
-      if (!dirHandle) return null
-      return ensureDirectoryPermission(dirHandle).then(function (granted) {
-        if (!granted) return null
-        return selectionFromDirHandle(dirHandle)
-      })
-    }).then(function (selection) {
+    tryLiveHandleSelection(sourceKey).then(function (selection) {
       if (selection) {
         return resolveFolderPick(selection)
       }
 
-      var cached = cloneCachedSelection(
-        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)]
-      )
-      if (cached) {
-        setFolderPickStatus('Using last selected files…')
-        return resolveFolderPick(cached)
-      }
-
       setFolderPickStatus('Loading saved folder…')
       return loadUploadSourceSnapshot(sourceKey).then(function (snapshotSelection) {
-        if (!snapshotSelection) {
+        if (snapshotSelection) {
+          setFolderPickStatus('Using saved folder “' + meta.folderName + '”…')
+          state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)] = snapshotSelection
+          return resolveFolderPick(snapshotSelection)
+        }
+        setFolderPickStatus('Using last selected files…')
+        return tryCachedSelection(sourceKey).then(function (cached) {
+          if (cached) return resolveFolderPick(cached)
           setFolderPickStatus('')
           toast(
-            'No saved files for “' + meta.folderName + '” yet. Use Browse folder or drop the folder once — Upload will remember it afterward.',
+            'Browser lost access to “' + meta.folderName +
+              '”. Use Browse folder once more, then Upload will remember it.',
             'error'
           )
           return null
-        }
-        setFolderPickStatus('Using saved folder “' + meta.folderName + '”…')
-        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)] = snapshotSelection
-        return resolveFolderPick(snapshotSelection)
+        })
       })
     }).catch(function (err) {
       if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
         setFolderPickStatus('')
         return
       }
-      var cached = cloneCachedSelection(
-        state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)]
-      )
-      if (cached) {
-        resolveFolderPick(cached)
-        return
-      }
       setFolderPickStatus('')
-      toast(
-        (err && err.message) ||
-          ('Cannot reopen “' + meta.folderName + '”. Use Browse folder once to save it again.'),
-        'error'
-      )
+      toast(friendlyFolderReadError(err, meta.folderName), 'error')
     })
   }
 
@@ -1882,8 +1990,17 @@
         if (entry.kind === 'directory') {
           await collectFilesFromDirHandle(entry, rel, out)
         } else if (entry.kind === 'file') {
-          var file = await entry.getFile()
-          out.push({ file: file, relPath: rel })
+          try {
+            var file = await entry.getFile()
+            var buffer = await readFileArrayBuffer(file)
+            out.push({ file: cloneFileFromBuffer(buffer, file), relPath: rel })
+          } catch (err) {
+            if (isUnreadableFileError(err)) {
+              console.warn('[upload-source] skip unreadable file:', rel)
+              continue
+            }
+            throw err
+          }
         }
       }
       return out
@@ -1953,7 +2070,7 @@
     dropzone.addEventListener('drop', function (event) {
       dropzone.classList.remove('is-dragover')
       handleFolderDrop(event).catch(function (err) {
-        toast(err.message || 'Could not read dropped folder', 'error')
+        toast(friendlyFolderReadError(err, 'dropped folder'), 'error')
         setFolderPickStatus('')
       })
     })
@@ -2076,7 +2193,7 @@
         setFolderPickStatus('')
         return
       }
-      toast((err && err.message) || 'Could not read folder', 'error')
+      toast(friendlyFolderReadError(err, 'folder'), 'error')
       setFolderPickStatus('')
     })
   }
@@ -2215,7 +2332,7 @@
         servicePort: String(selection.servicePort || '').trim()
       }, selection)
     }).catch(function (err) {
-      toast(err.message || 'Could not read folder', 'error')
+      toast(friendlyFolderReadError(err, pathHint), 'error')
     })
   }
 
@@ -2269,7 +2386,9 @@
       'Preparing upload…'
     )
 
-    selectionForTransport(selection, 'project-update.zip').then(function (ready) {
+    materializeSelection(selection).then(function (copied) {
+      return selectionForTransport(copied, 'project-update.zip')
+    }).then(function (ready) {
       var form = new FormData()
       if (ctx.servicePort) {
         form.append('servicePort', ctx.servicePort)
@@ -2370,7 +2489,7 @@
     }).catch(function (err) {
       setProjectActionsLocked(false)
       hideUpdateProgressModal()
-      toast((err && err.message) || 'Could not prepare upload', 'error')
+      toast(friendlyFolderReadError(err, ctx.pathHint || 'project'), 'error')
     })
   }
 
@@ -2420,7 +2539,7 @@
         totalBytes: selection.totalBytes
       })
     }).catch(function (err) {
-      toast(err.message || 'Could not read folder', 'error')
+      toast(friendlyFolderReadError(err, 'project'), 'error')
     })
   }
 
@@ -3533,7 +3652,7 @@
       if (!selection) return
       uploadSelfUpdate(selection)
     }).catch(function (err) {
-      toast(err.message || 'Could not read folder', 'error')
+      toast(friendlyFolderReadError(err, 'pm2-gui'), 'error')
     })
   }
 
