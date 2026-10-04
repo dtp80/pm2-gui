@@ -1762,10 +1762,8 @@
       archive: selection.archive || null
     }
     refreshFolderLastSourceUi(sourceKey)
-    if (selection.fromSnapshot) {
-      return Promise.resolve(null)
-    }
-    return saveUploadSourceSnapshot(sourceKey, selection)
+    clearUploadSourceSnapshot(sourceKey)
+    return Promise.resolve(null)
   }
 
   function finishFolderPickResolve (selection) {
@@ -1945,32 +1943,17 @@
       return
     }
 
-    setFolderPickStatus('Reading ' + meta.folderName + '…')
+    setFolderPickStatus('Reading current files in “' + meta.folderName + '”…')
 
     tryLiveHandleSelection(sourceKey).then(function (selection) {
       if (selection) {
         return resolveFolderPick(selection)
       }
-
-      setFolderPickStatus('Loading saved folder…')
-      return loadUploadSourceSnapshot(sourceKey).then(function (snapshotSelection) {
-        if (snapshotSelection) {
-          setFolderPickStatus('Using saved folder “' + meta.folderName + '”…')
-          state.uploadSelectionCache[normalizeUploadSourceKey(sourceKey)] = snapshotSelection
-          return resolveFolderPick(snapshotSelection)
-        }
-        setFolderPickStatus('Using last selected files…')
-        return tryCachedSelection(sourceKey).then(function (cached) {
-          if (cached) return resolveFolderPick(cached)
-          setFolderPickStatus('')
-          toast(
-            'Browser lost access to “' + meta.folderName +
-              '”. Use Browse folder once more, then Upload will remember it.',
-            'error'
-          )
-          return null
-        })
-      })
+      // IndexedDB snapshots / leftover FileLists are frozen copies (this is
+      // how self-update kept installing pm2-gui 0.6.12). Re-open the folder
+      // so we always upload what is on disk now.
+      setFolderPickStatus('Re-open “' + meta.folderName + '” to upload current files…')
+      browseFolderFromPickModal()
     }).catch(function (err) {
       if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
         setFolderPickStatus('')

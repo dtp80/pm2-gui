@@ -2,6 +2,7 @@ allowBuilds:
   better-sqlite3: true
 minimumReleaseAgeExclude:
   - "@types/node"
+engineStrict: false
 overrides:
   basic-ftp: ">=6.2.1"
   engine.io: ">=6.6.10"
